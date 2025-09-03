@@ -1,3 +1,5 @@
+## Updated orbit.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QHBoxLayout
 from PyQt5.QtCore import QObject, pyqtSignal
 import pyqtgraph as pg
@@ -419,24 +421,38 @@ class OrbitFeature(QObject):
                     self.console.append_to_console(f"Warning: Non-sequential frame index: expected {self.last_frame_index + 1}, got {frame_index}")
             self.last_frame_index = frame_index
 
-            if len(values) < self.channel_count:
-                if self.console:
-                    self.console.append_to_console(
-                        f"OrbitFeature: Received {len(values)} channels, expected at least {self.channel_count}, frame {frame_index}"
-                    )
+            # Dynamically handle values format: full channels or per channel
+            if len(values) == 0:
+                logging.warning(f"Empty values for frame {frame_index}")
                 return
-            self.sample_rate = sample_rate
-            self.samples_per_channel = len(values[0])
-            self.current_time = datetime.now().timestamp()
-            for i in range(min(self.channel_count, len(values))):
-                if len(values[i]) == self.samples_per_channel:
-                    self.channel_data[i] = np.array(values[i])
-                else:
+            if isinstance(values[0], (list, np.ndarray)):
+                # Full channels mode
+                if len(values) < self.channel_count:
                     if self.console:
                         self.console.append_to_console(
-                            f"OrbitFeature: Channel {i} has {len(values[i])} samples, expected {self.samples_per_channel}, frame {frame_index}"
+                            f"OrbitFeature: Received {len(values)} channels, expected at least {self.channel_count}, frame {frame_index}"
                         )
                     return
+                self.sample_rate = sample_rate
+                self.samples_per_channel = len(values[0]) if len(values) > 0 and len(values[0]) > 0 else 0
+                for i in range(self.channel_count):
+                    if len(values[i]) == self.samples_per_channel:
+                        self.channel_data[i] = np.array(values[i])
+                    else:
+                        if self.console:
+                            self.console.append_to_console(
+                                f"OrbitFeature: Channel {i} has {len(values[i])} samples, expected {self.samples_per_channel}, frame {frame_index}"
+                            )
+                        return
+            else:
+                # Per channel mode - but since no ch_idx, log warning and skip (cannot assign without index)
+                if self.console:
+                    self.console.append_to_console(
+                        f"OrbitFeature: Received per-channel data but cannot assign without channel index, skipping frame {frame_index}"
+                    )
+                return
+
+            self.current_time = datetime.now().timestamp()
             if self.console:
                 self.console.append_to_console(
                     f"OrbitFeature ({self.model_name}): Received {self.samples_per_channel} samples for {self.channel_count} channels, "
@@ -500,3 +516,61 @@ class OrbitFeature(QObject):
         self.load_channel_data()
         if self.console:
             self.console.append_to_console("OrbitFeature: Refreshed channel properties")
+
+    # NEW: Load selected saved frame payload and plot Orbit (dynamic for channel count)
+    def load_selected_frame(self, payload: dict):
+        try:
+            if not payload:
+                if self.console:
+                    self.console.append_to_console("Orbit: Invalid selection payload (empty).")
+                return
+            num_main = int(payload.get("numberOfChannels", 0))
+            num_tacho = int(payload.get("tacoChannelCount", 0))
+            total_ch = num_main + num_tacho
+            Fs = float(payload.get("samplingRate", 0) or 0)
+            N = int(payload.get("samplingSize", 0) or 0)
+            data_flat = payload.get("message", [])
+            if not Fs or not N or not total_ch or not data_flat:
+                if self.console:
+                    self.console.append_to_console("Orbit: Incomplete selection payload (Fs/N/channels/data missing).")
+                return
+
+            # Shape data into channels if flattened (concatenated per channel)
+            if isinstance(data_flat, list) and data_flat and isinstance(data_flat[0], (int, float)):
+                if len(data_flat) != total_ch * N:
+                    if self.console:
+                        self.console.append_to_console(f"Orbit: Data length mismatch. expected {total_ch*N}, got {len(data_flat)}")
+                    return
+                values = []
+                for ch in range(total_ch):
+                    start = ch * N
+                    end = start + N
+                    values.append(data_flat[start:end])
+            else:
+                # Assume already list-of-lists
+                values = data_flat
+                if len(values) != total_ch or any(len(v) != N for v in values):
+                    if self.console:
+                        self.console.append_to_console("Orbit: Invalid nested data shape in selection payload.")
+                    return
+
+            # Update channel count dynamically if mismatched
+            if num_main != self.channel_count:
+                if self.console:
+                    self.console.append_to_console(f"Orbit: Adjusting channel count from {self.channel_count} to {num_main} based on payload.")
+                self.channel_count = num_main
+                self.channel_data = [[] for _ in range(self.channel_count)]
+                # Re-create plots if needed
+                self.create_plots()
+
+            self.sample_rate = Fs
+            self.samples_per_channel = N
+            self.current_time = datetime.now().timestamp()
+            for i in range(self.channel_count):
+                self.channel_data[i] = np.array(values[i])
+            self.update_plots()
+            if self.console:
+                self.console.append_to_console(f"Orbit: Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz) for {self.channel_count} channels")
+        except Exception as e:
+            if self.console:
+                self.console.append_to_console(f"Orbit: Error loading selected frame: {e}")

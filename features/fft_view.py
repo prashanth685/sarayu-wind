@@ -1,3 +1,5 @@
+## Updated fft_view.py
+
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit, QGridLayout, QComboBox
 from PyQt5.QtGui import QDoubleValidator, QIntValidator
 from PyQt5.QtCore import QTimer, Qt
@@ -294,108 +296,73 @@ class FFTViewFeature:
         self.phase_plot_widget.setLabel('bottom', 'Frequency (Hz)', color='#000000')
         self.phase_plot_widget.showGrid(x=True, y=True)
         self.phase_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
-        self.phase_plot_widget.setYRange(-180, 180, padding=0.02)
+        self.phase_plot_widget.enableAutoRange('y', True)
         self.phase_plot_item = self.phase_plot_widget.plot(pen=pg.mkPen(color='#e74c3c', width=2))
         plot_layout.addWidget(self.phase_plot_widget)
 
         main_layout.addLayout(plot_layout)
+
         self.update_timer.start(self.update_interval)
 
     def initialize_async(self):
         try:
-            database = self.mongo_client.get_database("changed_db")
-            projects_collection = database.get_collection("projects")
-            project = projects_collection.find_one({"project_name": self.project_name, "email": self.db.email})
-            if not project:
-                self.log_and_set_status(f"Project {self.project_name} not found for email {self.db.email}.")
-                return
-            self.project_id = project["_id"]
-            model = next((m for m in project["models"] if m["name"] == self.model_name), None)
-            if not model:
-                self.log_and_set_status(f"Model {self.model_name} not found in project {self.project_name}.")
-                return
-            channels = model.get("channels", [])
-            if len(channels) != self.channel_count:
-                self.log_and_set_status(f"Warning: Model {self.model_name} has {len(channels)} channels, expected {self.channel_count}")
-            self.load_settings_from_database()
-            if self.console:
-                self.console.append_to_console(f"Initialized FFTViewFeature with project_id: {self.project_id}, channel_index: {self.channel_index}")
+            if not self.db.is_connected():
+                self.db.reconnect()
+            project_data = self.db.get_project_data(self.project_name)
+            self.project_id = project_data.get("_id")
+            self.settings = self.load_settings_from_database() or FFTSettings(self.project_id)
+            self.update_settings_ui()
         except Exception as e:
-            self.log_and_set_status(f"Error initializing FFTViewFeature: {str(e)}")
+            logging.error(f"Error initializing FFT settings: {str(e)}")
+            if self.console:
+                self.console.append_to_console(f"Error initializing FFT settings: {str(e)}")
 
     def load_settings_from_database(self):
         try:
-            database = self.mongo_client.get_database("changed_db")
-            settings_collection = database.get_collection("FFTSettings")
-            setting = settings_collection.find_one({"projectId": self.project_id}, sort=[("updatedAt", -1)])
-            if setting:
-                self.settings.window_type = setting.get("windowType", "Hamming")
-                self.settings.start_frequency = float(setting.get("startFrequency", 10.0))
-                self.settings.stop_frequency = float(setting.get("stopFrequency", 2000.0))
-                self.settings.number_of_lines = int(setting.get("numberOfLines", 1600))
-                self.settings.overlap_percentage = float(setting.get("overlapPercentage", 0.0))
-                self.settings.averaging_mode = setting.get("averagingMode", "No Averaging")
-                self.settings.number_of_averages = int(setting.get("numberOfAverages", 10))
-                self.settings.weighting_mode = setting.get("weightingMode", "Linear")
-                self.settings.linear_mode = setting.get("linearMode", "Continuous")
-
-                self.settings_widgets["WindowType"].setCurrentText(self.settings.window_type)
-                self.settings_widgets["StartFrequency"].setText(str(self.settings.start_frequency))
-                self.settings_widgets["StopFrequency"].setText(str(self.settings.stop_frequency))
-                self.settings_widgets["NumberOfLines"].setText(str(self.settings.number_of_lines))
-                self.settings_widgets["OverlapPercentage"].setText(str(self.settings.overlap_percentage))
-                self.settings_widgets["AveragingMode"].setCurrentText(self.settings.averaging_mode)
-                self.settings_widgets["NumberOfAverages"].setText(str(self.settings.number_of_averages))
-                self.settings_widgets["WeightingMode"].setCurrentText(self.settings.weighting_mode)
-                self.settings_widgets["LinearMode"].setCurrentText(self.settings.linear_mode)
-
-                self.magnitude_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
-                self.phase_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
-                if self.console:
-                    self.console.append_to_console(f"Loaded FFT settings for project ID: {self.project_id}")
-            else:
-                if self.console:
-                    self.console.append_to_console(f"No FFT settings found for project ID: {self.project_id}. Using defaults.")
+            collection = self.mongo_client["sarayu"]["fft_settings"]
+            settings_data = collection.find_one({"project_id": self.project_id})
+            if settings_data:
+                self.settings = FFTSettings(self.project_id)
+                self.settings.window_type = settings_data.get("window_type", "Hamming")
+                self.settings.start_frequency = settings_data.get("start_frequency", 10.0)
+                self.settings.stop_frequency = settings_data.get("stop_frequency", 2000.0)
+                self.settings.number_of_lines = settings_data.get("number_of_lines", 1600)
+                self.settings.overlap_percentage = settings_data.get("overlap_percentage", 0.0)
+                self.settings.averaging_mode = settings_data.get("averaging_mode", "No Averaging")
+                self.settings.number_of_averages = settings_data.get("number_of_averages", 10)
+                self.settings.weighting_mode = settings_data.get("weighting_mode", "Linear")
+                self.settings.linear_mode = settings_data.get("linear_mode", "Continuous")
+                self.settings.updated_at = settings_data.get("updated_at", datetime.utcnow())
+                return self.settings
+            return None
         except Exception as e:
-            self.log_and_set_status(f"Error loading FFT settings: {str(e)}")
+            logging.error(f"Error loading FFT settings from database: {str(e)}")
+            return None
 
     def save_settings_to_database(self):
-        if not self.project_id:
-            logging.error("Project ID is not set, cannot save settings")
-            if self.console:
-                self.console.append_to_console("Error: Project ID is not set, cannot save settings")
-            return
         try:
-            database = self.mongo_client.get_database("changed_db")
-            settings_collection = database.get_collection("FFTSettings")
-            setting = {
-                "projectId": self.project_id,
-                "windowType": self.settings.window_type,
-                "startFrequency": self.settings.start_frequency,
-                "stopFrequency": self.settings.stop_frequency,
-                "numberOfLines": self.settings.number_of_lines,
-                "overlapPercentage": self.settings.overlap_percentage,
-                "averagingMode": self.settings.averaging_mode,
-                "numberOfAverages": self.settings.number_of_averages,
-                "weightingMode": self.settings.weighting_mode,
-                "linearMode": self.settings.linear_mode,
-                "updatedAt": datetime.utcnow()
-            }
-            result = settings_collection.update_one(
-                {"projectId": self.project_id},
-                {"$set": setting},
+            collection = self.mongo_client["sarayu"]["fft_settings"]
+            self.settings.updated_at = datetime.utcnow()
+            settings_dict = vars(self.settings)
+            collection.update_one(
+                {"project_id": self.project_id},
+                {"$set": settings_dict},
                 upsert=True
             )
-            if result.upserted_id:
-                logging.info(f"Inserted new FFT settings document with ID: {result.upserted_id}")
-            else:
-                logging.info(f"Updated existing FFT settings document")
-            if self.console:
-                self.console.append_to_console(f"Saved FFT settings for project ID: {self.project_id}")
         except Exception as e:
-            logging.error(f"Error saving FFT settings: {str(e)}")
-            if self.console:
-                self.console.append_to_console(f"Error saving FFT settings: {str(e)}")
+            logging.error(f"Error saving FFT settings to database: {str(e)}")
+
+    def update_settings_ui(self):
+        if self.settings_widgets:
+            self.settings_widgets["WindowType"].setCurrentText(self.settings.window_type)
+            self.settings_widgets["StartFrequency"].setText(str(self.settings.start_frequency))
+            self.settings_widgets["StopFrequency"].setText(str(self.settings.stop_frequency))
+            self.settings_widgets["NumberOfLines"].setText(str(self.settings.number_of_lines))
+            self.settings_widgets["OverlapPercentage"].setText(str(self.settings.overlap_percentage))
+            self.settings_widgets["AveragingMode"].setCurrentText(self.settings.averaging_mode)
+            self.settings_widgets["NumberOfAverages"].setText(str(self.settings.number_of_averages))
+            self.settings_widgets["WeightingMode"].setCurrentText(self.settings.weighting_mode)
+            self.settings_widgets["LinearMode"].setCurrentText(self.settings.linear_mode)
 
     def toggle_settings(self):
         self.settings_panel.setVisible(not self.settings_panel.isVisible())
@@ -477,16 +444,26 @@ class FFTViewFeature:
                     self.console.append_to_console(f"Warning: Non-sequential frame index: expected {self.last_frame_index + 1}, got {frame_index}")
             self.last_frame_index = frame_index
 
-            if len(values) < self.channel_count:
-                self.log_and_set_status(f"Received {len(values)} channels, expected at least {self.channel_count}, frame {frame_index}")
+            # Dynamically handle values format: full channels or per channel
+            if len(values) == 0:
+                logging.warning(f"Empty values for frame {frame_index}")
                 return
-            if self.channel_index >= len(values):
-                self.log_and_set_status(f"Channel index {self.channel_index} out of range for {len(values)} channels, frame {frame_index}")
-                return
+            if isinstance(values[0], (list, np.ndarray)):
+                # Full channels mode
+                if len(values) < self.channel_count:
+                    self.log_and_set_status(f"Received {len(values)} channels, expected at least {self.channel_count}, frame {frame_index}")
+                    return
+                if self.channel_index >= len(values):
+                    self.log_and_set_status(f"Channel index {self.channel_index} out of range for {len(values)} channels, frame {frame_index}")
+                    return
+                channel_data = values[self.channel_index]
+            else:
+                # Per channel mode
+                channel_data = values
 
             self.sample_rate = sample_rate if sample_rate > 0 else 1000
             scaling_factor = 3.3 / 65535.0
-            raw_data = np.array(values[self.channel_index][:self.max_samples], dtype=np.float32)
+            raw_data = np.array(channel_data[:self.max_samples], dtype=np.float32)
             self.latest_data = raw_data * scaling_factor
             self.data_buffer.append(self.latest_data.copy())
             if len(self.data_buffer) > self.settings.number_of_averages:
@@ -603,7 +580,7 @@ class FFTViewFeature:
             total_ch = num_main + num_tacho
             Fs = float(payload.get("samplingRate", 0) or 0)
             N = int(payload.get("samplingSize", 0) or 0)
-            data_flat = payload.get("channelData", [])
+            data_flat = payload.get("message", [])
             if not Fs or not N or not total_ch or not data_flat:
                 self.log_and_set_status("FFT: Incomplete selection payload (Fs/N/channels/data missing).")
                 return
@@ -640,3 +617,4 @@ class FFTViewFeature:
                 self.console.append_to_console(f"FFT: Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz)")
         except Exception as e:
             self.log_and_set_status(f"FFT: Error loading selected frame: {e}")
+

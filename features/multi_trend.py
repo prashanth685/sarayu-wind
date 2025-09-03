@@ -15,7 +15,7 @@ class TimeAxisItem(pg.AxisItem):
         return [datetime.fromtimestamp(val * 86400.0).strftime('%H:%M:%S') for val in values]
 
 class MultiTrendFeature:
-    def __init__(self, parent, db, project_name, channel=None, model_name=None, console=None):
+    def __init__(self, parent, db, project_name, channel=None, model_name=None, console=None, channel_count=None):
         self.parent = parent
         self.db = db
         self.project_name = project_name
@@ -46,6 +46,7 @@ class MultiTrendFeature:
         self.last_right_limit = None
         self.tag_name = None
         self.last_frame_index = -1
+        self.channel_count = int(channel_count) if channel_count is not None else self.get_channel_count_from_db()
         self.init_data()
         self.init_ui()
         if self.console:
@@ -53,6 +54,28 @@ class MultiTrendFeature:
                 f"Initialized MultiTrendFeature for {self.model_name or 'No Model'}/{self.channel or 'No Channel'} "
                 f"with {len(self.channel_names)} channels"
             )
+
+    def get_channel_count_from_db(self):
+        try:
+            if not self.db.is_connected():
+                self.db.reconnect()
+            project_data = self.db.get_project_data(self.project_name)
+            if not project_data:
+                if self.console:
+                    self.console.append_to_console(f"Project {self.project_name} not found in database")
+                return 1
+            model = next((m for m in project_data.get("models", []) if m["name"] == self.model_name), None)
+            if not model:
+                if self.console:
+                    self.console.append_to_console(f"Model {self.model_name} not found")
+                return 1
+            channels = model.get("channels", [])
+            return max(1, len(channels))
+        except Exception as e:
+            if self.console:
+                self.console.append_to_console(f"Error retrieving channel count from database: {str(e)}")
+            logging.error(f"Error retrieving channel count from database: {str(e)}")
+            return 1
 
     def init_data(self):
         try:
@@ -67,11 +90,10 @@ class MultiTrendFeature:
                 self.log_error(f"TagName not found for Model: {self.model_name}")
                 return
             self.tag_name = model["tagName"]
-            self.log_info(f"Retrieved TagName: {self.tag_name} for Model: {self.model_name}")
             self.channel_names = [c["channelName"] for c in model.get("channels", [])]
             if not self.channel_names:
                 self.log_error(f"No channels found in model {self.model_name}.")
-                return
+                self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
             self.channel_data = [{"direct_data": [], "timestamps": []} for _ in self.channel_names]
             self.log_info(f"Initialized {len(self.channel_names)} channels for Model: {self.model_name}")
         except Exception as e:
@@ -95,6 +117,7 @@ class MultiTrendFeature:
         scroll_area.setWidget(channel_selection_widget)
         scroll_area.setWidgetResizable(True)
         scroll_area.setFixedHeight(60)
+        self.channel_checkboxes = []
         for i, ch_name in enumerate(self.channel_names):
             cb = QCheckBox(ch_name)
             cb.setChecked(True)
@@ -179,23 +202,33 @@ class MultiTrendFeature:
                     self.console.append_to_console(f"Warning: Non-sequential frame index: expected {self.last_frame_index + 1}, got {frame_index}")
             self.last_frame_index = frame_index
 
-            # Log received data structure
-            self.log_info(f"Received data: {len(values)} channels, sample_rate: {sample_rate}, "
-                          f"first channel length: {len(values[0]) if values else 0}, frame {frame_index}")
-
-            # Validate data
-            expected_channels = len(self.channel_names)
-            if len(values) < expected_channels:
-                self.log_error(f"Invalid data: expected at least {expected_channels} channels, got {len(values)}, frame {frame_index}")
+            # Handle values format: full channels or per channel
+            if len(values) == 0:
+                self.log_error(f"Empty values for frame {frame_index}")
                 return
 
-            # Extract main channels and tacho trigger (last channel, if available)
-            main_data = values[:expected_channels]
-            trigger_data = values[-1] if len(values) > expected_channels else []
+            if isinstance(values[0], (list, np.ndarray)):
+                # Full channels mode
+                total_channels = len(values)
+                if total_channels < self.channel_count:
+                    self.log_error(f"Invalid data: expected at least {self.channel_count} channels, got {total_channels}, frame {frame_index}")
+                    return
+                # Update channel count dynamically if needed
+                if total_channels != self.channel_count:
+                    self.log_info(f"Adjusting channel count from {self.channel_count} to {total_channels} based on payload, frame {frame_index}")
+                    self.channel_count = total_channels
+                    self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
+                    self.channel_data = [{"direct_data": [], "timestamps": []} for _ in self.channel_names]
+                    self.update_ui_channels()
+                main_data = values[:self.channel_count]
+                trigger_data = values[-1] if total_channels > self.channel_count else []
+            else:
+                # Per channel mode - not expected for multi-trend
+                self.log_error(f"Received per-channel data, expected full channels, skipping frame {frame_index}")
+                return
 
             # Fallback trigger data if none provided
             if not trigger_data or len(trigger_data) < len(main_data[0]):
-                # Generate synthetic triggers (every 100 samples)
                 trigger_data = [1 if i % 100 == 0 else 0 for i in range(len(main_data[0]))]
                 self.log_info(f"No valid trigger data; using synthetic triggers, frame {frame_index}")
 
@@ -210,7 +243,6 @@ class MultiTrendFeature:
 
             if len(trigger_indices) < 2:
                 self.log_error(f"Not enough trigger points detected, frame {frame_index}")
-                # Use synthetic triggers as fallback
                 trigger_indices = list(range(0, len(main_data[0]), 100))
                 if len(trigger_indices) < 2:
                     self.log_error(f"Synthetic triggers insufficient, frame {frame_index}")
@@ -244,6 +276,119 @@ class MultiTrendFeature:
             self.update_plot()
         except Exception as e:
             self.log_error(f"Error processing data, frame {frame_index}: {str(e)}")
+
+    def load_selected_frame(self, payload: dict):
+        try:
+            if not payload:
+                self.log_error("Invalid selection payload (empty).")
+                return
+            num_main = int(payload.get("numberOfChannels", 0))
+            num_tacho = int(payload.get("tacoChannelCount", 0))
+            total_ch = num_main + num_tacho
+            Fs = float(payload.get("samplingRate", 0) or 0)
+            N = int(payload.get("samplingSize", 0) or 0)
+            data_flat = payload.get("message", [])
+            if not Fs or not N or not total_ch or not data_flat:
+                self.log_error("Incomplete selection payload (Fs/N/channels/data missing).")
+                return
+
+            # Shape data into channels if flattened
+            if isinstance(data_flat, list) and data_flat and isinstance(data_flat[0], (int, float)):
+                if len(data_flat) != total_ch * N:
+                    self.log_error(f"Data length mismatch. Expected {total_ch*N}, got {len(data_flat)}")
+                    return
+                values = []
+                for ch in range(total_ch):
+                    start = ch * N
+                    end = start + N
+                    values.append(data_flat[start:end])
+            else:
+                # Assume already list-of-lists
+                values = data_flat
+                if len(values) != total_ch or any(len(v) != N for v in values):
+                    self.log_error("Invalid nested data shape in selection payload.")
+                    return
+
+            # Update channel count dynamically if mismatched
+            if num_main != self.channel_count:
+                self.log_info(f"Adjusting channel count from {self.channel_count} to {num_main} based on payload.")
+                self.channel_count = num_main
+                self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
+                self.channel_data = [{"direct_data": [], "timestamps": []} for _ in self.channel_names]
+                self.update_ui_channels()
+
+            # Calibrate data
+            main_data = values[:num_main]
+            trigger_data = values[-1] if total_ch > num_main else [1 if i % 100 == 0 else 0 for i in range(N)]
+            calibrated_data = [[float(v) * self.scaling_factor for v in ch] for ch in main_data]
+
+            # Find trigger indices
+            trigger_indices = [i for i, v in enumerate(trigger_data) if v >= 1.0]
+            min_distance = 5
+            filtered_triggers = [trigger_indices[0]] if trigger_indices else []
+            for idx in trigger_indices[1:]:
+                if idx - filtered_triggers[-1] >= min_distance:
+                    filtered_triggers.append(idx)
+            trigger_indices = filtered_triggers
+
+            if len(trigger_indices) < 2:
+                self.log_error("Not enough trigger points detected in selected frame")
+                trigger_indices = list(range(0, N, 100))
+                if len(trigger_indices) < 2:
+                    self.log_error("Synthetic triggers insufficient in selected frame")
+                    return
+
+            # Calculate Direct (peak-to-peak) values
+            current_time = datetime.now().timestamp() / 86400.0
+            for ch_idx in range(self.channel_count):
+                direct_values = []
+                for i in range(len(trigger_indices) - 1):
+                    start_idx = trigger_indices[i]
+                    end_idx = trigger_indices[i + 1]
+                    if end_idx <= len(calibrated_data[ch_idx]):
+                        segment = calibrated_data[ch_idx][start_idx:end_idx]
+                        if segment:
+                            peak_to_peak = max(segment) - min(segment)
+                            direct_values.append(peak_to_peak)
+                direct_avg = np.mean(direct_values) if direct_values else 0.0
+                self.channel_data[ch_idx]["direct_data"] = [direct_avg]
+                self.channel_data[ch_idx]["timestamps"] = [current_time]
+
+            self.update_plot()
+            self.log_info(f"Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz) for {self.channel_count} channels")
+        except Exception as e:
+            self.log_error(f"Error loading selected frame: {str(e)}")
+
+    def update_ui_channels(self):
+        # Clear existing checkboxes
+        for cb in self.channel_checkboxes:
+            cb.deleteLater()
+        self.channel_checkboxes.clear()
+        # Clear existing plots
+        for plot in self.plots:
+            self.plot_widget.removeItem(plot)
+        self.plots.clear()
+        # Rebuild channel selection UI
+        channel_selection_widget = self.widget.findChild(QScrollArea).widget()
+        channel_layout = channel_selection_widget.layout()
+        for i in reversed(range(channel_layout.count())):
+            item = channel_layout.itemAt(i)
+            if item.widget():
+                item.widget().deleteLater()
+        for i, ch_name in enumerate(self.channel_names):
+            cb = QCheckBox(ch_name)
+            cb.setChecked(True)
+            cb.stateChanged.connect(lambda state, idx=i: self.toggle_channel(idx, state))
+            cb.setStyleSheet(f"color: rgb{self.colors[i % len(self.colors)]};")
+            self.channel_checkboxes.append(cb)
+            channel_layout.addWidget(cb)
+        channel_layout.addStretch()
+        # Rebuild plots
+        for i, ch_name in enumerate(self.channel_names):
+            plot = self.plot_widget.plot([], [], pen=pg.mkPen(color=self.colors[i % len(self.colors)], width=2),
+                                         name=ch_name, symbol='o', symbolSize=5)
+            self.plots.append(plot)
+        self.log_info(f"Updated UI for {self.channel_count} channels")
 
     def update_plot(self):
         try:
@@ -300,5 +445,7 @@ class MultiTrendFeature:
         self.update_timer.stop()
         self.channel_data.clear()
         self.plots.clear()
+        for cb in self.channel_checkboxes:
+            cb.deleteLater()
         self.channel_checkboxes.clear()
         self.log_info("Cleaned up MultiTrendFeature")

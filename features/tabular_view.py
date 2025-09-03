@@ -547,16 +547,41 @@ class TabularViewFeature:
             self.refresh_channel_properties()
             values, sample_rate, frame_index = self.data_buffer[-1]  # Process the latest data
             self.data_buffer = []  # Clear buffer after processing
-            values = values[:self.num_channels] + [np.zeros(4096).tolist() for _ in range(self.num_channels - len(values))] if len(values) < self.num_channels else values[:self.num_channels]
+
+            # Dynamically handle channel count
+            if len(values) == 0:
+                self.log_and_set_status(f"Empty values for frame {frame_index}")
+                return
+            if isinstance(values[0], (list, np.ndarray)):
+                # Full channels mode
+                total_channels = len(values)
+                num_tacho = 2  # Assume 2 tacho channels
+                main_channels = total_channels - num_tacho if total_channels >= num_tacho else total_channels
+                if main_channels != self.num_channels:
+                    self.log_and_set_status(f"Adjusting channel count from {self.num_channels} to {main_channels} based on payload, frame {frame_index}")
+                    self.num_channels = main_channels
+                    self.channel_names = [f"Channel_{i+1}" for i in range(self.num_channels)]
+                    self.channel_properties = {name: {"Unit": "mil", "CorrectionValue": 1.0, "Gain": 1.0, "Sensitivity": 1.0} for name in self.channel_names}
+                    self.table.setRowCount(self.num_channels)
+                    self.initialize_data_arrays()
+                    self.update_table_defaults()
+                    self.initialize_plots()
+            else:
+                # Per channel mode - not expected, skip
+                self.log_and_set_status(f"Received per-channel data, expected full channels, skipping frame {frame_index}")
+                return
+
+            # Pad or slice to 4096 samples per channel
             for i in range(len(values)):
                 if len(values[i]) < 4096:
                     values[i] = list(np.pad(values[i], (0, 4096 - len(values[i])), 'constant'))[:4096]
                 elif len(values[i]) > 4096:
                     values[i] = values[i][:4096]
+
             self.sample_rate = sample_rate if sample_rate > 0 else 4096
             self.data = values
             if self.console:
-                self.console.append_to_console(f"Processing buffered data for frame {frame_index}, {len(values)} channels")
+                self.console.append_to_console(f"Processing buffered data for frame {frame_index}, {self.num_channels} channels")
 
             channel_data_list = []
             for ch in range(self.num_channels):
@@ -625,7 +650,6 @@ class TabularViewFeature:
                     "NXAmp": self.format_direct_value([np.mean(self.three_x_amps[ch])], unit) if self.three_x_amps[ch] else "0.00",
                     "NXPhase": f"{np.mean(self.three_x_phases[ch]):.2f}" if self.three_x_phases[ch] else "0.00"
                 }
-                channel_data_list.append(channel_data)
                 self.update_table_row(ch, channel_data)
             QTimer.singleShot(0, self.update_plots)
             if self.console:
