@@ -236,7 +236,7 @@ class WaterfallFeature:
                     x = frequencies if frequencies is not None and len(frequencies) == len(fft_line) else np.arange(len(fft_line))
                     y = np.full_like(x, ch_idx * (self.max_lines + 2))
                     z = fft_line
-                    self.ax.plot(x, y, z, color=colors[ch_idx % len(colors)], label=self.channel_names[ch_idx] if idx == num_lines - 1 else None)
+                    self.ax.plot(x, y, z, color=colors[ch_idx % len(colors)])
                     max_amplitude = max(max_amplitude, np.max(z) if len(z) > 0 else 0)
                     plotted = True
                     if self.console:
@@ -253,7 +253,7 @@ class WaterfallFeature:
             self.ax.set_ylim(-1, self.channel_count * (self.max_lines + 2))
             self.ax.set_xlim(self.frequency_range[0], self.frequency_range[1] if frequencies is not None else 1000)
             self.ax.set_zlim(0, max_amplitude * 1.1 if max_amplitude > 0 else 1.0)
-            self.ax.legend(loc='upper right')
+            # self.ax.legend(loc='upper right')
             self.ax.view_init(elev=20, azim=-45)
             self.figure.tight_layout()
             self.canvas.draw_idle()

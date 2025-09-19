@@ -188,7 +188,6 @@ class DashboardWindow(QWidget):
 
         self.tree_view = TreeView(self)
         self.tree_view.setVisible(False)
-        # Connect TreeView's channel_selected signal
         self.tree_view.channel_selected.connect(self.on_channel_selected)
         self.main_splitter.addWidget(self.tree_view)
 
@@ -464,22 +463,25 @@ class DashboardWindow(QWidget):
         try:
             for key, feature_instance in self.feature_instances.items():
                 instance_feature, instance_model, instance_channel, _ = key
-                if instance_feature == feature_name and instance_model == model_name:
-                    if hasattr(feature_instance, 'on_data_received'):
-                        if instance_feature in ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]:
-                            if instance_channel is None:
-                                QTimer.singleShot(0, lambda: self._update_feature(
-                                    instance_feature, instance_model, instance_channel,
-                                    feature_instance, tag_name, values, sample_rate, frame_index
-                                ))
-                        else:
-                            for ch_idx in range(len(values)):
-                                channel_name = f"Channel_{ch_idx + 1}"
-                                if instance_channel is None or instance_channel == channel_name:
-                                    QTimer.singleShot(0, lambda v=values[ch_idx], ch=ch_idx: self._update_feature(
-                                        instance_feature, instance_model, instance_channel,
-                                        feature_instance, tag_name, v, sample_rate, frame_index
-                                    ))
+                if instance_model != model_name or feature_name not in self.mqtt_handler.feature_mapping:
+                    continue
+                mapped_features = self.mqtt_handler.feature_mapping[feature_name]
+                if instance_feature not in mapped_features and instance_feature != feature_name:
+                    continue
+                if instance_feature in ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]:
+                    if instance_channel is None:
+                        QTimer.singleShot(0, lambda: self._update_feature(
+                            instance_feature, instance_model, instance_channel,
+                            feature_instance, tag_name, values, sample_rate, frame_index
+                        ))
+                else:
+                    for ch_idx in range(len(values)):
+                        channel_name = f"Channel_{ch_idx + 1}" if ch_idx < self.channel_count else f"Tacho_{ch_idx - self.channel_count + 1}"
+                        if instance_channel is None or instance_channel == channel_name:
+                            QTimer.singleShot(0, lambda v=values[ch_idx], ch=channel_name: self._update_feature(
+                                instance_feature, instance_model, ch,
+                                feature_instance, tag_name, v, sample_rate, frame_index
+                            ))
             logging.debug(f"Processed data for {feature_name}/{model_name}, frame {frame_index}")
         except Exception as e:
             logging.error(f"Error in on_data_received for {feature_name}/{model_name}, frame {frame_index}: {str(e)}")
@@ -487,8 +489,9 @@ class DashboardWindow(QWidget):
 
     def _update_feature(self, feature_name, model_name, channel, feature_instance, tag_name, values, sample_rate, frame_index):
         try:
-            feature_instance.on_data_received(tag_name, model_name, values, sample_rate, frame_index)
-            logging.debug(f"Updated {feature_name} for {model_name}/{channel or 'all channels'}, frame {frame_index}")
+            if hasattr(feature_instance, 'on_data_received'):
+                feature_instance.on_data_received(tag_name, model_name, values, sample_rate, frame_index)
+                logging.debug(f"Updated {feature_name} for {model_name}/{channel or 'all channels'}, frame {frame_index}")
         except Exception as e:
             logging.error(f"Error updating {feature_name} for {model_name}/{channel or 'all channels'}: {str(e)}")
             self.console.append_to_console(f"Error updating {feature_name}: {str(e)}")
@@ -581,7 +584,7 @@ class DashboardWindow(QWidget):
                         self.main_section.mdi_area.removeSubWindow(sub_window)
                         sub_window.setParent(None)
                         sub_window.deleteLater()
-                        logging.debug(f"Closed subwindow for {key} during clear_content_layout, ID: {id(sub_window)}")
+                        logging.debug(f"Closed subwindow for {key} during clear_content_layout")
                     except Exception as e:
                         logging.error(f"Error closing subwindow {key}: {str(e)}")
             self.sub_windows.clear()
@@ -610,7 +613,6 @@ class DashboardWindow(QWidget):
             self.main_section.scroll_area.viewport().update()
             gc.collect()
             logging.debug("Completed clear_content_layout")
-            logging.debug(f"Current widget in MainSection: {self.main_section.current_widget}")
         except Exception as e:
             logging.error(f"Error clearing content layout: {str(e)}")
 
@@ -690,9 +692,7 @@ class DashboardWindow(QWidget):
             QMessageBox.warning(self, "Error", "No models available.")
             return
 
-        # Use the first model as the active model
         selected_model = model_names[0]
-        # Get all channels for the selected model
         model = next((m for m in project_data["models"] if m["name"] == selected_model), None)
         channel_names = [ch["channelName"] for ch in model.get("channels", [])] if model else []
 
@@ -704,14 +704,12 @@ class DashboardWindow(QWidget):
         self.console.console_message_area.setFixedHeight(current_console_height)
 
         try:
-            # For features that use all channels, use None; for others, use selected channel or default to first
             if feature_name in ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]:
                 channel_list = [None]
             else:
                 if self.selected_channel and self.selected_channel in channel_names:
                     channel_list = [self.selected_channel]
                 else:
-                    # Default to first channel if none selected
                     channel_list = [channel_names[0]]
                     self.console.append_to_console(f"No channel selected in TreeView. Defaulting to {channel_names[0]}.")
                     logging.debug(f"No channel selected. Defaulting to {channel_names[0]} for {feature_name}")
@@ -737,7 +735,29 @@ class DashboardWindow(QWidget):
                 QMessageBox.warning(self, "Error", f"Unknown feature: {feature_name}")
                 return
 
+            opened_new = False
             for channel in channel_list:
+                existing_key = None
+                for key in self.feature_instances.keys():
+                    if key[0] == feature_name and key[1] == selected_model and key[2] == channel:
+                        existing_key = key
+                        break
+
+                if existing_key:
+                    sub_window = self.sub_windows.get(existing_key)
+                    if sub_window:
+                        try:
+                            sub_window.show()
+                            sub_window.raise_()
+                            sub_window.activateWindow()
+                            if sub_window.isMinimized():
+                                sub_window.showNormal()
+                            logging.debug(f"Activated existing subwindow for {feature_name}/{selected_model}/{channel or 'No Channel'}")
+                            self.console.append_to_console(f"{feature_name} already open. Brought to front.")
+                        except Exception as e:
+                            logging.error(f"Error activating existing subwindow for {existing_key}: {str(e)}")
+                    continue
+
                 unique_id = int(time.time() * 1000)
                 key = (feature_name, selected_model, channel, unique_id)
                 try:
@@ -766,6 +786,8 @@ class DashboardWindow(QWidget):
                         feature_instance.update_selected_channel(channel)
 
                     self.feature_instances[key] = feature_instance
+                    if self.mqtt_handler:
+                        self.mqtt_handler.add_active_feature(feature_name, selected_model, channel)
                     widget = feature_instance.get_widget()
                     if widget:
                         sub_window = self.main_section.add_subwindow(
@@ -778,17 +800,21 @@ class DashboardWindow(QWidget):
                             self.sub_windows[key] = sub_window
                             sub_window.closeEvent = lambda event, k=key: self.on_subwindow_closed(event, k)
                             sub_window.show()
-                            logging.debug(f"Created new subwindow for {key}, ID: {id(sub_window)}")
+                            logging.debug(f"Created new subwindow for {key}")
+                            opened_new = True
                         else:
                             logging.error(f"Failed to create subwindow for {feature_name}/{selected_model}/{channel or 'No Channel'}")
                             QMessageBox.warning(self, "Error", f"Failed to create subwindow for {feature_name}")
                             del self.feature_instances[key]
+                            if self.mqtt_handler:
+                                self.mqtt_handler.remove_active_feature(feature_name, selected_model, channel)
                     else:
                         logging.error(f"Feature {feature_name} returned invalid widget")
                         QMessageBox.warning(self, "Error", f"Feature {feature_name} failed to initialize")
                         del self.feature_instances[key]
+                        if self.mqtt_handler:
+                            self.mqtt_handler.remove_active_feature(feature_name, selected_model, channel)
 
-                    # If a saved selection exists for this model, load it
                     payload = self.last_selection_payload_by_model.get(selected_model)
                     if payload and hasattr(feature_instance, "load_selected_frame"):
                         try:
@@ -803,19 +829,20 @@ class DashboardWindow(QWidget):
                     QMessageBox.warning(self, "Error", f"Failed to load {feature_name}: {str(e)}")
                     if key in self.feature_instances:
                         del self.feature_instances[key]
+                    if self.mqtt_handler:
+                        self.mqtt_handler.remove_active_feature(feature_name, selected_model, channel)
 
-            self.main_section.arrange_layout()
-            self.console.console_message_area.setFixedHeight(current_console_height)
+            if opened_new:
+                self.main_section.arrange_layout()
+                self.console.console_message_area.setFixedHeight(current_console_height)
+            else:
+                self.console.append_to_console(f"{feature_name} is already open.")
+            self.current_feature = feature_name  # Update current_feature
         except Exception as e:
             logging.error(f"Error displaying feature content: {str(e)}")
             QMessageBox.warning(self, "Error", f"Error displaying feature: {str(e)}")
 
     def handle_open_file(self, file_data):
-        """
-        Open FrequencyPlot to occupy full main section.
-        After user selects frameIndex (time_range_selected), close the FrequencyPlot window
-        and store the selection payload for feature usage.
-        """
         try:
             self.clear_content_layout()
 
@@ -844,7 +871,7 @@ class DashboardWindow(QWidget):
                 except Exception:
                     pass
                 self.main_section.arrange_layout()
-                logging.debug(f"Opened FrequencyPlot for {file_data} occupying full main section")
+                logging.debug(f"Opened FrequencyPlot for {file_data}")
                 self.console.append_to_console(f"Opened FrequencyPlot for {file_data['filename']} (model: {file_data['model_name']})")
             else:
                 logging.error(f"Failed to open FrequencyPlot subwindow for {file_data}")
@@ -853,57 +880,7 @@ class DashboardWindow(QWidget):
             logging.error(f"Error handling open file: {str(e)}")
             QMessageBox.warning(self, "Error", f"Failed to open file: {str(e)}")
 
-    def _open_feature_and_load_frame(self, feature_class, feature_name, model_name, payload, channel=None, with_channel_count=False):
-        """
-        Retained helper (for programmatic openings). Not auto-invoked after Frequency selection in this flow.
-        """
-        unique_id = int(time.time() * 1000)
-        key = (feature_name, model_name, channel, unique_id)
-        feature_kwargs = {
-            "parent": self,
-            "db": self.db,
-            "project_name": self.current_project,
-            "channel": channel,
-            "model_name": model_name,
-            "console": self.console
-        }
-        if with_channel_count:
-            feature_kwargs["channel_count"] = self.channel_count
-        feature_instance = feature_class(**feature_kwargs)
-        widget = feature_instance.get_widget()
-        if not widget:
-            self.console.append_to_console(f"{feature_name} failed to initialize")
-            return
-        sub_window = self.main_section.add_subwindow(
-            widget,
-            feature_name,
-            channel_name=channel,
-            model_name=model_name
-        )
-        if not sub_window:
-            self.console.append_to_console(f"Failed to create {feature_name} subwindow")
-            return
-        self.feature_instances[key] = feature_instance
-        self.sub_windows[key] = sub_window
-        sub_window.closeEvent = lambda event, k=key: self.on_subwindow_closed(event, k)
-        sub_window.show()
-        if hasattr(feature_instance, "load_selected_frame"):
-            try:
-                feature_instance.load_selected_frame(payload)
-                self.console.append_to_console(f"{feature_name}: loaded frame {payload.get('frameIndex')} from {payload.get('filename')}")
-            except Exception as e:
-                self.console.append_to_console(f"{feature_name}: error loading selected frame: {e}")
-        else:
-            self.console.append_to_console(f"{feature_name}: load_selected_frame not available")
-        self.main_section.arrange_layout()
-
     def on_frequency_selection(self, selected_payload: dict):
-        """
-        Handle selection from FrequencyPlot:
-        - Save payload per model,
-        - Close FrequencyPlot window immediately,
-        - Let user click desired features; those features will consume the saved payload.
-        """
         try:
             model_name = selected_payload.get("model")
             if not self.current_project or not model_name:
@@ -931,7 +908,6 @@ class DashboardWindow(QWidget):
                     self.main_section.arrange_layout()
                 except Exception as e:
                     logging.error(f"Error closing FrequencyPlot window after selection: {e}")
-
         except Exception as e:
             logging.error(f"Failed to handle frequency selection: {str(e)}")
             self.console.append_to_console(f"Error applying selection: {str(e)}")
@@ -939,7 +915,7 @@ class DashboardWindow(QWidget):
     def on_subwindow_closed(self, event, key):
         try:
             feature_name, model_name, channel_name, unique_id = key
-            logging.debug(f"Closing subwindow for key: {key}, ID: {id(self.sub_windows.get(key))}")
+            logging.debug(f"Closing subwindow for key: {key}")
 
             sub_window = self.sub_windows.get(key)
             if not sub_window:
@@ -971,12 +947,15 @@ class DashboardWindow(QWidget):
                 del self.feature_instances[key]
                 logging.debug(f"Removed feature instance for {key}")
 
+            if self.mqtt_handler:
+                self.mqtt_handler.remove_active_feature(feature_name, model_name, channel_name)
+
             try:
                 sub_window.close()
                 self.main_section.mdi_area.removeSubWindow(sub_window)
                 sub_window.setParent(None)
                 sub_window.deleteLater()
-                logging.debug(f"Removed subwindow from MDI area for {key}, ID: {id(sub_window)}")
+                logging.debug(f"Removed subwindow from MDI area for {key}")
             except Exception as e:
                 logging.error(f"Error removing subwindow for {key}: {str(e)}")
             del self.sub_windows[key]

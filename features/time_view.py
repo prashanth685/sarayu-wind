@@ -72,7 +72,7 @@ class TimeViewFeature:
 
         self.plot_colors = [
             '#0000FF', '#FF0000', '#00FF00', '#800080', '#FFA500', '#A52A2A', '#FFC0CB', '#008080',
-            '#FF4500', '#32CD32', '#00CED1', '#FFD700', '#FF69B4', '#8A2BE2', '#FF6347', '#20B2AA',
+            '#FF4500', '#32CD32', '#00CED1', "#0D0D0C", '#FF69B4', '#8A2BE2', '#FF6347', '#20B2AA',
             '#ADFF2F', '#9932CC', '#FF7F50', '#00FA9A', '#9400D3'
         ]
 
