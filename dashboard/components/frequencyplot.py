@@ -1,4 +1,4 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QSlider, QHBoxLayout, QMessageBox
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QSlider, QHBoxLayout, QMessageBox, QSizePolicy
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
@@ -13,7 +13,9 @@ class FrequencyPlot(QWidget):
 
     def __init__(self, parent=None, project_name=None, model_name=None, filename=None, start_time=None, end_time=None, email="user@example.com"):
         super().__init__(parent)
-        self.setMinimumSize(800, 600)
+        # Use a reasonable minimum size and let the widget expand with its container
+        self.setMinimumSize(640, 480)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.project_name = project_name
         self.model_name = model_name
         self.filename = filename
@@ -69,7 +71,9 @@ class FrequencyPlot(QWidget):
         self.figure = Figure()
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111)
-        self.layout.addWidget(self.canvas)
+        # Let the canvas expand in the available space
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.layout.addWidget(self.canvas, stretch=1)
 
         self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
         self.canvas.mpl_connect('button_press_event', self.on_mouse_click)
@@ -78,7 +82,9 @@ class FrequencyPlot(QWidget):
         self.slider_widget = QWidget()
         self.slider_layout = QHBoxLayout()
         self.slider_widget.setLayout(self.slider_layout)
-        self.slider_widget.setFixedHeight(50)
+        # Make the slider area responsive
+        self.slider_widget.setMinimumHeight(44)
+        self.slider_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
         self.start_label = QLabel("Start: ")
         self.start_label.setStyleSheet("font-size: 14px; color: #333;")
@@ -364,7 +370,17 @@ class FrequencyPlot(QWidget):
     def select_button_click(self):
         try:
             if not self.is_crosshair_locked or not self.locked_crosshair_position:
-                QMessageBox.information(self, "Information", "Please click on the plot to lock the crosshair at desired position first, then click Select.")
+                mb = self._create_styled_messagebox(
+                    title="Selection Required",
+                    text=(
+                        "Please click on the plot to lock the crosshair at the desired position first,\n"
+                        "then click Select."
+                    ),
+                    icon=QMessageBox.Information,
+                    buttons=QMessageBox.Ok,
+                    default=QMessageBox.Ok,
+                )
+                mb.exec_()
                 logging.info("Select button clicked but crosshair not locked")
                 return
 
@@ -373,7 +389,14 @@ class FrequencyPlot(QWidget):
             self.selected_record = self.find_closest_record(selected_frame_index)
 
             if not self.selected_record:
-                QMessageBox.warning(self, "Warning", "No record found for the locked crosshair position.")
+                mb = self._create_styled_messagebox(
+                    title="No Record Found",
+                    text="No record found for the locked crosshair position.",
+                    icon=QMessageBox.Warning,
+                    buttons=QMessageBox.Ok,
+                    default=QMessageBox.Ok,
+                )
+                mb.exec_()
                 logging.info("No record found for locked crosshair position")
                 return
 
@@ -405,13 +428,74 @@ class FrequencyPlot(QWidget):
                 f"Confirm final selection?\n"
                 f"The frequency plot will close after confirmation."
             )
-            result = QMessageBox.question(self, "Final Confirmation - Frame Range Information", confirmation_message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            mb = self._create_styled_messagebox(
+                title="Final Confirmation - Frame Range Information",
+                text=confirmation_message,
+                icon=QMessageBox.Question,
+                buttons=QMessageBox.Yes | QMessageBox.No,
+                default=QMessageBox.No,
+            )
+            result = mb.exec_()
             if result == QMessageBox.Yes:
                 self.time_range_selected.emit(selected_data)
                 logging.info(f"Data confirmed for FrameIndex: {selected_data['frameIndex']}, Range: {start_frame_index} to {end_frame_index}")
-                QMessageBox.information(self, "Selection Complete", f"Selection confirmed.\nFrame Index {selected_data['frameIndex']} selected.\nRange: {start_frame_index} to {end_frame_index}\n\nThe frequency plot will now close.")
+                mb_done = self._create_styled_messagebox(
+                    title="Selection Complete",
+                    text=(
+                        f"Selection confirmed.\n"
+                        f"Frame Index: <b>{selected_data['frameIndex']}</b> selected.\n"
+                        f"Range: {start_frame_index} to {end_frame_index}\n\n"
+                        f"The frequency plot will now close."
+                    ),
+                    icon=QMessageBox.Information,
+                    buttons=QMessageBox.Ok,
+                    default=QMessageBox.Ok,
+                )
+                mb_done.exec_()
                 if self.parent() and hasattr(self.parent(), "close"):
                     self.parent().close()
         except Exception as e:
             logging.error(f"Error in select button click: {str(e)}")
-            QMessageBox.critical(self, "Error", f"Error during selection: {str(e)}")
+            mb_err = self._create_styled_messagebox(
+                title="Error",
+                text=f"Error during selection: {str(e)}",
+                icon=QMessageBox.Critical,
+                buttons=QMessageBox.Ok,
+                default=QMessageBox.Ok,
+            )
+            mb_err.exec_()
+
+    def _create_styled_messagebox(self, title: str, text: str, icon=QMessageBox.Information, buttons=QMessageBox.Ok, default=QMessageBox.Ok) -> QMessageBox:
+        mb = QMessageBox(self)
+        mb.setIcon(icon)
+        mb.setWindowTitle(title)
+        # Use rich text to improve readability
+        mb.setText(f"<div style='font-size:14px; color:#333333;'><b>{title}</b></div>")
+        mb.setInformativeText(text.replace("\n", "<br/>") )
+        mb.setStandardButtons(buttons)
+        mb.setDefaultButton(default)
+        mb.setStyleSheet(
+            """
+            QMessageBox {
+                background-color: #ffffff;
+                border: 1px solid #dcdfe6;
+                border-radius: 8px;
+                padding: 8px;
+            }
+            QMessageBox QLabel {
+                color: #333333;
+                font-size: 14px;
+            }
+            QMessageBox QPushButton {
+                min-width: 88px;
+                padding: 6px 12px;
+                border-radius: 4px;
+                background-color: #4a90e2;
+                color: #ffffff;
+                border: none;
+            }
+            QMessageBox QPushButton:hover { background-color: #357abd; }
+            QMessageBox QPushButton:pressed { background-color: #2c5d9b; }
+            """
+        )
+        return mb

@@ -1,5 +1,5 @@
 import numpy as np
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, QScrollArea, QSizePolicy
 from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
 from datetime import datetime
@@ -116,7 +116,10 @@ class MultiTrendFeature:
         scroll_area = QScrollArea()
         scroll_area.setWidget(channel_selection_widget)
         scroll_area.setWidgetResizable(True)
-        scroll_area.setFixedHeight(60)
+        # Responsive height for channel selection area
+        scroll_area.setMinimumHeight(48)
+        scroll_area.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+
         self.channel_checkboxes = []
         for i, ch_name in enumerate(self.channel_names):
             cb = QCheckBox(ch_name)
@@ -137,10 +140,17 @@ class MultiTrendFeature:
         self.plot_widget.addLegend()
         self.plot_widget.setXRange(-self.display_window_seconds / 86400.0, 0, padding=0.02)
         self.plot_widget.enableAutoRange('y', True)
+        self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
         self.plots = []
         for i, ch_name in enumerate(self.channel_names):
             plot = self.plot_widget.plot([], [], pen=pg.mkPen(color=self.colors[i % len(self.colors)], width=2),
-                                         name=ch_name, symbol='o', symbolSize=5)
+                                         name=ch_name)
+            try:
+                plot.setDownsampling(auto=True)
+                plot.setClipToView(True)
+            except Exception:
+                pass
             self.plots.append(plot)
         main_layout.addWidget(self.plot_widget)
 

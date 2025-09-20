@@ -1,6 +1,6 @@
 ## Updated orbit.py
 
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QHBoxLayout
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QComboBox, QHBoxLayout, QSizePolicy
 from PyQt5.QtCore import QObject, pyqtSignal
 import pyqtgraph as pg
 import numpy as np
@@ -267,8 +267,18 @@ class OrbitFeature(QObject):
 
         plot_widget = pg.PlotWidget()
         plot_widget.setBackground('w')
-        plot_widget.setFixedSize(500, 500)
+        # Use responsive sizing
+        plot_widget.setMinimumSize(400, 300)
+        plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.plot_layout.addWidget(plot_widget)
+
+        # Container to stack time-domain plots vertically (one by one)
+        time_plots_container = QWidget()
+        time_plots_vlayout = QVBoxLayout()
+        time_plots_vlayout.setContentsMargins(0, 0, 0, 0)
+        time_plots_vlayout.setSpacing(8)
+        time_plots_container.setLayout(time_plots_vlayout)
+        self.plot_layout.addWidget(time_plots_container)
         plot_item = plot_widget.getPlotItem()
         plot_item.setTitle(f"Orbit Plot (Ch {self.available_channels[self.secondary_channel]} vs Ch {self.available_channels[self.primary_channel]})")
         plot_item.setLabel('bottom', f"Channel {self.available_channels[self.primary_channel]}")
@@ -287,8 +297,11 @@ class OrbitFeature(QObject):
             if ch < self.channel_count:
                 time_plot_widget = pg.PlotWidget()
                 time_plot_widget.setBackground('w')
-                time_plot_widget.setFixedSize(500, 500)
-                self.plot_layout.addWidget(time_plot_widget)
+                # Responsive time-domain plot sizing
+                time_plot_widget.setMinimumSize(300, 160)
+                time_plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                # Add each time-domain plot to the vertical container to show one by one
+                time_plots_vlayout.addWidget(time_plot_widget)
                 time_plot_item = time_plot_widget.getPlotItem()
                 time_plot_item.setTitle(f"Channel {self.available_channels[ch]} Time Domain")
                 time_plot_item.setLabel('bottom', "Time (s)")

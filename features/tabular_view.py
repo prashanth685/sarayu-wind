@@ -1,5 +1,5 @@
 import numpy as np
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QScrollArea, QPushButton, QCheckBox, QComboBox, QHBoxLayout, QGridLayout, QLabel
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QScrollArea, QPushButton, QCheckBox, QComboBox, QHBoxLayout, QGridLayout, QLabel, QSizePolicy
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer
 from PyQt5.QtGui import QIcon
 import pyqtgraph as pg
@@ -255,7 +255,9 @@ class TabularViewFeature:
         self.table = QTableWidget()
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        self.table.setFixedHeight(200)
+        # Responsive table sizing
+        self.table.setMinimumHeight(160)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
         layout.addWidget(self.table)
 
         self.table_initialized = True
@@ -325,7 +327,9 @@ class TabularViewFeature:
             plot_widget.setLabel('bottom', 'Time (s)' if title != "Bandpass Peak-to-Peak Over Time" else 'Time (s)')
             unit_label = self.get_unit_label()
             plot_widget.setLabel('left', f'Amplitude ({unit_label})' if title != "Bandpass Peak-to-Peak Over Time" else f'Peak-to-Peak Value ({unit_label})')
-            plot_widget.setFixedHeight(250)
+            # Responsive sizing for plots
+            plot_widget.setMinimumHeight(180)
+            plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
             self.scroll_layout.addWidget(plot_widget)
             self.plot_widgets.append(plot_widget)
             plot = plot_widget.plot(pen='b')
@@ -471,26 +475,38 @@ class TabularViewFeature:
         for col, header in enumerate(headers):
             self.table.setColumnHidden(col, not self.column_visibility[header])
 
+    def get_trigger_indices(self, trigger_data):
+        trigger_data = np.array(trigger_data)
+        threshold = 0.5
+        max_attempts = 5
+        for attempt in range(max_attempts):
+            indices = []
+            for i in range(1, len(trigger_data)):
+                if trigger_data[i-1] < threshold and trigger_data[i] >= threshold:
+                    indices.append(i)
+            if len(indices) >= 2:
+                return indices
+            threshold /= 2
+        # Fallback to artificial triggers
+        return [0, 1024, 2048, 3072]
+
     def compute_harmonics(self, data, start_idx, segment_length, order):
         try:
             if segment_length <= 0 or start_idx >= len(data) or start_idx + segment_length > len(data):
                 return 0.0, 0.0
             segment = data[start_idx:start_idx + segment_length]
-            if len(segment) < 2:
+            N = len(segment)
+            if N < 2:
                 return 0.0, 0.0
-            freqs = np.fft.fftfreq(len(segment), 1.0 / self.sample_rate)
-            fft_vals = np.fft.fft(segment)
-            pos_mask = freqs > 0
-            freqs = freqs[pos_mask]
-            fft_vals = fft_vals[pos_mask]
-            if len(freqs) == 0 or self.average_frequency[self.selected_channel] == 0:
-                return 0.0, 0.0
-            fundamental_freq = self.average_frequency[self.selected_channel]
-            target_freq = fundamental_freq * order
-            idx = np.argmin(np.abs(freqs - target_freq))
-            amplitude = np.abs(fft_vals[idx]) * 2 / len(segment)
-            phase = np.angle(fft_vals[idx], deg=True)
-            return amplitude, phase
+            sine_sum = 0.0
+            cosine_sum = 0.0
+            for t in range(N):
+                angle = 2 * np.pi * order * t / N
+                sine_sum += segment[t] * np.sin(angle)
+                cosine_sum += segment[t] * np.cos(angle)
+            amp = np.sqrt((sine_sum / N)**2 + (cosine_sum / N)**2) * 4
+            phase = np.arctan2(cosine_sum, sine_sum) * 180 / np.pi
+            return amp, phase
         except Exception as ex:
             self.log_and_set_status(f"Error computing harmonics: {str(ex)}")
             return 0.0, 0.0
@@ -544,47 +560,70 @@ class TabularViewFeature:
         if not self.data_buffer:
             return
         try:
+            # Ensure we have the latest channel mapping and units from DB
             self.refresh_channel_properties()
             values, sample_rate, frame_index = self.data_buffer[-1]  # Process the latest data
             self.data_buffer = []  # Clear buffer after processing
 
-            # Dynamically handle channel count
+            # Dynamically handle channel count and tacho detection
             if len(values) == 0:
                 self.log_and_set_status(f"Empty values for frame {frame_index}")
                 return
-            if isinstance(values[0], (list, np.ndarray)):
-                # Full channels mode
-                total_channels = len(values)
-                num_tacho = 2  # Assume 2 tacho channels
-                main_channels = total_channels - num_tacho if total_channels >= num_tacho else total_channels
-                if main_channels != self.num_channels:
-                    self.log_and_set_status(f"Adjusting channel count from {self.num_channels} to {main_channels} based on payload, frame {frame_index}")
-                    self.num_channels = main_channels
-                    self.channel_names = [f"Channel_{i+1}" for i in range(self.num_channels)]
-                    self.channel_properties = {name: {"Unit": "mil", "CorrectionValue": 1.0, "Gain": 1.0, "Sensitivity": 1.0} for name in self.channel_names}
-                    self.table.setRowCount(self.num_channels)
-                    self.initialize_data_arrays()
-                    self.update_table_defaults()
-                    self.initialize_plots()
-            else:
-                # Per channel mode - not expected, skip
+            if not isinstance(values[0], (list, np.ndarray)):
+                # Per-channel mode - not expected for TabularView
                 self.log_and_set_status(f"Received per-channel data, expected full channels, skipping frame {frame_index}")
                 return
 
-            # Pad or slice to 4096 samples per channel
+            total_channels = len(values)
+            expected_main = max(1, len(self.channel_names))  # from model
+            inferred_tacho = max(0, total_channels - expected_main)
+            if inferred_tacho > 2:
+                inferred_tacho = 2
+            main_channels = total_channels - inferred_tacho
+
+            # If payload has fewer main channels than expected, shrink arrays but preserve names/units
+            if main_channels < expected_main:
+                self.log_and_set_status(f"Adjusting channel count from {self.num_channels} to {main_channels} based on payload, frame {frame_index}")
+                self.channel_names = self.channel_names[:main_channels] if self.channel_names else [f"Channel_{i+1}" for i in range(main_channels)]
+                self.channel_properties = {name: self.channel_properties.get(name, {"Unit": "mil", "CorrectionValue": 1.0, "Gain": 1.0, "Sensitivity": 1.0}) for name in self.channel_names}
+                self.num_channels = main_channels
+                self.table.setRowCount(self.num_channels)
+                self.initialize_data_arrays()
+                self.update_table_defaults()
+                self.initialize_plots()
+            else:
+                # Keep model-defined main channel count
+                self.num_channels = expected_main
+
+            # Normalize channel lengths to 4096
             for i in range(len(values)):
                 if len(values[i]) < 4096:
                     values[i] = list(np.pad(values[i], (0, 4096 - len(values[i])), 'constant'))[:4096]
                 elif len(values[i]) > 4096:
                     values[i] = values[i][:4096]
 
-            self.sample_rate = sample_rate if sample_rate > 0 else 4096
+            self.sample_rate = sample_rate if sample_rate and sample_rate > 0 else self.sample_rate
             self.data = values
             if self.console:
-                self.console.append_to_console(f"Processing buffered data for frame {frame_index}, {self.num_channels} channels")
+                self.console.append_to_console(f"Processing buffered data for frame {frame_index}, mains={self.num_channels}, tacho={inferred_tacho}")
 
-            channel_data_list = []
+            # Compute triggers from tacho trigger channel (prefer second tacho if present)
+            trigger_index = self.num_channels + 1 if inferred_tacho >= 2 else (self.num_channels if inferred_tacho >= 1 else None)
+            trigger_data = values[trigger_index] if trigger_index is not None and len(values) > trigger_index else []
+            triggers = self.get_trigger_indices(trigger_data) if len(trigger_data) > 0 else [0, 1024, 2048, 3072]
+
+            # Compute Tacho frequency (Hz) from trigger indices
+            tacho_freq = 0.0
+            if len(triggers) >= 2:
+                diffs = np.diff(triggers)
+                if len(diffs) > 0:
+                    avg_period = float(np.mean(diffs))
+                    if avg_period > 0:
+                        tacho_freq = float(self.sample_rate) / avg_period
+
+            # Process each main channel
             for ch in range(self.num_channels):
+                self.average_frequency[ch] = tacho_freq
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch+1}"
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
                 unit = props["Unit"].lower()
@@ -603,30 +642,54 @@ class TabularViewFeature:
                 self.low_pass_data[ch] = signal.lfilter(low_pass_coeffs, 1.0, self.raw_data[ch])
                 self.high_pass_data[ch] = signal.lfilter(high_pass_coeffs, 1.0, self.raw_data[ch])
                 self.band_pass_data[ch] = signal.lfilter(band_pass_coeffs, 1.0, self.raw_data[ch])
-                tacho_freq = 0.0
-                if len(values) > self.num_channels:
-                    tacho_data = values[self.num_channels]
-                    if len(tacho_data) > 1:
-                        peaks, _ = signal.find_peaks(tacho_data)
-                        if len(peaks) > 1:
-                            tacho_freq = self.sample_rate / np.mean(np.diff(peaks))
-                self.average_frequency[ch] = tacho_freq
-                band_pass_peak_to_peak = np.ptp(self.band_pass_data[ch]) if np.any(self.band_pass_data[ch]) else 0.0
-                self.band_pass_peak_to_peak[ch] = band_pass_peak_to_peak
-                self.band_pass_peak_to_peak_history[ch].append(band_pass_peak_to_peak)
+
+                # Segment-based calculations between triggers
+                direct_ptps, bandpass_ptps = [], []
+                one_x_amps_list, one_x_phases_list = [], []
+                two_x_amps_list, two_x_phases_list = [], []
+                three_x_amps_list, three_x_phases_list = [], []
+                for j in range(len(triggers) - 1):
+                    start = triggers[j]
+                    end = triggers[j + 1]
+                    seg_len = end - start
+                    if seg_len <= 1:
+                        continue
+                    seg_raw = self.raw_data[ch][start:end]
+                    direct_ptps.append(np.max(seg_raw) - np.min(seg_raw))
+                    seg_band = self.band_pass_data[ch][start:end]
+                    bandpass_ptps.append(np.max(seg_band) - np.min(seg_band))
+                    amp1, phase1 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 1)
+                    one_x_amps_list.append(amp1)
+                    one_x_phases_list.append(phase1)
+                    amp2, phase2 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 2)
+                    two_x_amps_list.append(amp2)
+                    two_x_phases_list.append(phase2)
+                    amp3, phase3 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 3)
+                    three_x_amps_list.append(amp3)
+                    three_x_phases_list.append(phase3)
+
+                avg_direct = float(np.mean(direct_ptps)) if direct_ptps else 0.0
+                avg_bandpass = float(np.mean(bandpass_ptps)) if bandpass_ptps else 0.0
+                avg_1xa = float(np.mean(one_x_amps_list)) if one_x_amps_list else 0.0
+                avg_1xp = float(np.mean(one_x_phases_list)) if one_x_phases_list else 0.0
+                avg_2xa = float(np.mean(two_x_amps_list)) if two_x_amps_list else 0.0
+                avg_2xp = float(np.mean(two_x_phases_list)) if two_x_phases_list else 0.0
+                avg_nxa = float(np.mean(three_x_amps_list)) if three_x_amps_list else 0.0
+                avg_nxp = float(np.mean(three_x_phases_list)) if three_x_phases_list else 0.0
+
+                self.band_pass_peak_to_peak[ch] = avg_bandpass
+                self.band_pass_peak_to_peak_history[ch].append(avg_bandpass)
                 self.band_pass_peak_to_peak_times[ch].append((datetime.now() - self.start_time).total_seconds())
                 if len(self.band_pass_peak_to_peak_history[ch]) > 50:
                     self.band_pass_peak_to_peak_history[ch] = self.band_pass_peak_to_peak_history[ch][-50:]
                     self.band_pass_peak_to_peak_times[ch] = self.band_pass_peak_to_peak_times[ch][-50:]
-                amp1, phase1 = self.compute_harmonics(self.raw_data[ch], 0, len(self.raw_data[ch]), 1)
-                amp2, phase2 = self.compute_harmonics(self.raw_data[ch], 0, len(self.raw_data[ch]), 2)
-                amp3, phase3 = self.compute_harmonics(self.raw_data[ch], 0, len(self.raw_data[ch]), 3)
-                self.one_x_amps[ch].append(amp1)
-                self.one_x_phases[ch].append(phase1)
-                self.two_x_amps[ch].append(amp2)
-                self.two_x_phases[ch].append(phase2)
-                self.three_x_amps[ch].append(amp3)
-                self.three_x_phases[ch].append(phase3)
+
+                self.one_x_amps[ch].append(avg_1xa)
+                self.one_x_phases[ch].append(avg_1xp)
+                self.two_x_amps[ch].append(avg_2xa)
+                self.two_x_phases[ch].append(avg_2xp)
+                self.three_x_amps[ch].append(avg_nxa)
+                self.three_x_phases[ch].append(avg_nxp)
                 if len(self.one_x_amps[ch]) > 50:
                     self.one_x_amps[ch] = self.one_x_amps[ch][-50:]
                     self.one_x_phases[ch] = self.one_x_phases[ch][-50:]
@@ -634,28 +697,154 @@ class TabularViewFeature:
                     self.two_x_phases[ch] = self.two_x_phases[ch][-50:]
                     self.three_x_amps[ch] = self.three_x_amps[ch][-50:]
                     self.three_x_phases[ch] = self.three_x_phases[ch][-50:]
-                direct_values = [np.ptp(self.raw_data[ch])] if np.any(self.raw_data[ch]) else []
+
                 channel_data = {
                     "Channel Name": channel_name,
                     "Unit": unit,
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{self.average_frequency[ch] * 60.0:.2f}" if self.average_frequency[ch] > 0 else "0.00",
                     "Gap": "0.00",
-                    "Direct": self.format_direct_value(direct_values, unit),
-                    "Bandpass": self.format_direct_value([self.band_pass_peak_to_peak[ch]], unit),
-                    "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
-                    "1xP": f"{np.mean(self.one_x_phases[ch]):.2f}" if self.one_x_phases[ch] else "0.00",
-                    "2xA": self.format_direct_value([np.mean(self.two_x_amps[ch])], unit) if self.two_x_amps[ch] else "0.00",
-                    "2xP": f"{np.mean(self.two_x_phases[ch]):.2f}" if self.two_x_phases[ch] else "0.00",
-                    "NXAmp": self.format_direct_value([np.mean(self.three_x_amps[ch])], unit) if self.three_x_amps[ch] else "0.00",
-                    "NXPhase": f"{np.mean(self.three_x_phases[ch]):.2f}" if self.three_x_phases[ch] else "0.00"
+                    "Direct": self.format_direct_value([avg_direct], unit),
+                    "Bandpass": self.format_direct_value([avg_bandpass], unit),
+                    "1xA": self.format_direct_value([avg_1xa], unit),
+                    "1xP": f"{avg_1xp:.2f}",
+                    "2xA": self.format_direct_value([avg_2xa], unit),
+                    "2xP": f"{avg_2xp:.2f}",
+                    "NXAmp": self.format_direct_value([avg_nxa], unit),
+                    "NXPhase": f"{avg_nxp:.2f}"
                 }
                 self.update_table_row(ch, channel_data)
             QTimer.singleShot(0, self.update_plots)
             if self.console:
-                self.console.append_to_console(f"Processed buffered data for frame {frame_index}, {self.num_channels} channels")
+                self.console.append_to_console(f"Processed buffered data for frame {frame_index}, mains={self.num_channels}, tacho={inferred_tacho}")
         except Exception as ex:
             self.log_and_set_status(f"Error processing buffered data for frame {frame_index}: {str(ex)}")
+
+    def load_selected_frame(self, payload: dict):
+        try:
+            if not payload:
+                self.log_and_set_status("TabularView: Invalid selection payload (empty)")
+                return
+            num_main = int(payload.get("numberOfChannels", 0))
+            num_tacho = int(payload.get("tacoChannelCount", 0))
+            total_ch = num_main + num_tacho
+            Fs = float(payload.get("samplingRate", 0) or 0)
+            N = int(payload.get("samplingSize", 0) or 0)
+            data_flat = payload.get("message") or payload.get("channelData") or []
+            if not Fs or not N or not total_ch or not data_flat:
+                self.log_and_set_status("TabularView: Incomplete selection payload (Fs/N/channels/data missing)")
+                return
+
+            # Shape to list-of-lists values
+            if isinstance(data_flat, list) and data_flat and isinstance(data_flat[0], (int, float)):
+                if len(data_flat) != total_ch * N:
+                    self.log_and_set_status(f"TabularView: Data length mismatch. Expected {total_ch*N}, got {len(data_flat)}")
+                    return
+                values = []
+                for ch in range(total_ch):
+                    start = ch * N
+                    end = start + N
+                    values.append(data_flat[start:end])
+            else:
+                values = data_flat
+                if len(values) != total_ch or any(len(v) != N for v in values):
+                    self.log_and_set_status("TabularView: Invalid nested data shape in selection payload")
+                    return
+
+            # Refresh model properties and resize arrays
+            self.refresh_channel_properties()
+            expected_main = max(1, len(self.channel_names))
+            if num_main < expected_main:
+                self.channel_names = self.channel_names[:num_main]
+            self.num_channels = num_main
+            if self.table:
+                self.table.setRowCount(self.num_channels)
+            self.initialize_data_arrays()
+            self.update_table_defaults()
+
+            # Normalize channel lengths to 4096 for internal arrays
+            for i in range(len(values)):
+                if len(values[i]) < 4096:
+                    values[i] = list(np.pad(values[i], (0, 4096 - len(values[i])), 'constant'))[:4096]
+                elif len(values[i]) > 4096:
+                    values[i] = values[i][:4096]
+
+            self.sample_rate = Fs if Fs > 0 else self.sample_rate
+
+            # Determine trigger channel (prefer second tacho if present)
+            inferred_tacho = max(0, total_ch - num_main)
+            if inferred_tacho > 2:
+                inferred_tacho = 2
+            trigger_index = self.num_channels + 1 if inferred_tacho >= 2 else (self.num_channels if inferred_tacho >= 1 else None)
+            trigger_data = values[trigger_index] if trigger_index is not None and len(values) > trigger_index else []
+            triggers = self.get_trigger_indices(trigger_data) if len(trigger_data) > 0 else [0, 1024, 2048, 3072]
+
+            # Compute per-channel metrics
+            for ch in range(self.num_channels):
+                self.average_frequency[ch] = 0.0
+                if len(triggers) >= 2:
+                    diffs = np.diff(triggers)
+                    if len(diffs) > 0 and np.mean(diffs) > 0:
+                        self.average_frequency[ch] = float(self.sample_rate) / float(np.mean(diffs))
+
+                self.raw_data[ch] = self.process_calibrated_data(values[ch], ch)
+                nyquist = self.sample_rate / 2.0
+                tap_num = 31
+                low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
+                high_pass_coeffs = signal.firwin(tap_num, 200 / nyquist, window='hamming', pass_zero=False)
+                # Use current bandpass setting
+                if self.bandpass_selection == "50-200 Hz":
+                    band = [50 / nyquist, 200 / nyquist]
+                elif self.bandpass_selection == "100-300 Hz":
+                    band = [100 / nyquist, 300 / nyquist]
+                else:
+                    band = [50 / nyquist, 200 / nyquist]
+                band_pass_coeffs = signal.firwin(tap_num, band, window='hamming', pass_zero=False)
+
+                self.low_pass_data[ch] = signal.lfilter(low_pass_coeffs, 1.0, self.raw_data[ch])
+                self.high_pass_data[ch] = signal.lfilter(high_pass_coeffs, 1.0, self.raw_data[ch])
+                self.band_pass_data[ch] = signal.lfilter(band_pass_coeffs, 1.0, self.raw_data[ch])
+
+                # Segment computations
+                direct_ptps, bandpass_ptps = [], []
+                one_x_amps_list, one_x_phases_list = [], []
+                two_x_amps_list, two_x_phases_list = [], []
+                three_x_amps_list, three_x_phases_list = [], []
+                for j in range(len(triggers) - 1):
+                    start = triggers[j]
+                    end = triggers[j + 1]
+                    seg_len = end - start
+                    if seg_len <= 1:
+                        continue
+                    seg_raw = self.raw_data[ch][start:end]
+                    direct_ptps.append(float(np.max(seg_raw) - np.min(seg_raw)))
+                    seg_band = self.band_pass_data[ch][start:end]
+                    bandpass_ptps.append(float(np.max(seg_band) - np.min(seg_band)))
+                    amp1, phase1 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 1)
+                    one_x_amps_list.append(amp1); one_x_phases_list.append(phase1)
+                    amp2, phase2 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 2)
+                    two_x_amps_list.append(amp2); two_x_phases_list.append(phase2)
+                    amp3, phase3 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 3)
+                    three_x_amps_list.append(amp3); three_x_phases_list.append(phase3)
+
+                # Assign single-frame stats
+                self.band_pass_peak_to_peak[ch] = float(np.mean(bandpass_ptps)) if bandpass_ptps else 0.0
+                self.band_pass_peak_to_peak_history[ch] = [self.band_pass_peak_to_peak[ch]]
+                self.band_pass_peak_to_peak_times[ch] = [0.0]
+                self.one_x_amps[ch] = [float(np.mean(one_x_amps_list)) if one_x_amps_list else 0.0]
+                self.one_x_phases[ch] = [float(np.mean(one_x_phases_list)) if one_x_phases_list else 0.0]
+                self.two_x_amps[ch] = [float(np.mean(two_x_amps_list)) if two_x_amps_list else 0.0]
+                self.two_x_phases[ch] = [float(np.mean(two_x_phases_list)) if two_x_phases_list else 0.0]
+                self.three_x_amps[ch] = [float(np.mean(three_x_amps_list)) if three_x_amps_list else 0.0]
+                self.three_x_phases[ch] = [float(np.mean(three_x_phases_list)) if three_x_phases_list else 0.0]
+
+            # Update UI from this single selection
+            self.update_display()
+            if self.console:
+                self.console.append_to_console(
+                    f"TabularView: Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz) for {self.num_channels} channels")
+        except Exception as ex:
+            self.log_and_set_status(f"TabularView: Error loading selected frame: {str(ex)}")
 
     def update_table_row(self, row, channel_data):
         if not self.table or not self.table_initialized:

@@ -120,6 +120,11 @@ class TrendViewFeature:
         layout.addWidget(self.plot_widget)
 
         self.curve = self.plot_widget.plot(pen=pg.mkPen('b', width=1))
+        try:
+            self.curve.setDownsampling(auto=True)
+            self.curve.setClipToView(True)
+        except Exception:
+            pass
         self.curve.setSymbol('o')
         self.curve.setSymbolSize(5)
 
@@ -200,28 +205,30 @@ class TrendViewFeature:
                     filtered_trigger_indices.append(trigger_indices[i])
 
             if len(filtered_trigger_indices) < 2:
-                logging.warning(f"Not enough trigger points detected, frame {frame_index}")
+                # Fallback: compute peak-to-peak over entire window
+                logging.warning(f"Not enough trigger points detected, using window p2p fallback, frame {frame_index}")
                 if self.console:
-                    self.console.append_to_console(f"TrendView: Not enough trigger points detected, frame {frame_index}")
-                return
-
-            direct_values = []
-            for i in range(len(filtered_trigger_indices) - 1):
-                start_idx = filtered_trigger_indices[i]
-                end_idx = filtered_trigger_indices[i + 1]
-                if end_idx <= start_idx:
-                    continue
-                segment_data = channel_data[start_idx:end_idx]
-                if len(segment_data) == 0:
-                    continue
-                peak_to_peak = segment_data.max() - segment_data.min()
-                direct_values.append(peak_to_peak)
+                    self.console.append_to_console(f"TrendView: Not enough trigger points, using window p2p fallback (frame {frame_index})")
+                direct_values = [float(np.max(channel_data) - np.min(channel_data))]
+            else:
+                direct_values = []
+                for i in range(len(filtered_trigger_indices) - 1):
+                    start_idx = filtered_trigger_indices[i]
+                    end_idx = filtered_trigger_indices[i + 1]
+                    if end_idx <= start_idx:
+                        continue
+                    segment_data = channel_data[start_idx:end_idx]
+                    if len(segment_data) == 0:
+                        continue
+                    peak_to_peak = segment_data.max() - segment_data.min()
+                    direct_values.append(peak_to_peak)
 
             if not direct_values:
-                logging.warning(f"No valid segments for peak-to-peak calculation, frame {frame_index}")
+                # Secondary fallback safety
+                logging.warning(f"No valid segments for calculation, using window p2p fallback, frame {frame_index}")
                 if self.console:
-                    self.console.append_to_console(f"TrendView: No valid segments for calculation, frame {frame_index}")
-                return
+                    self.console.append_to_console(f"TrendView: No valid segments, using window p2p fallback (frame {frame_index})")
+                direct_values = [float(np.max(channel_data) - np.min(channel_data))]
 
             direct_average = np.mean(direct_values)
             timestamp = datetime.now().timestamp()
@@ -300,26 +307,27 @@ class TrendViewFeature:
                     filtered_trigger_indices.append(trigger_indices[i])
 
             if len(filtered_trigger_indices) < 2:
+                # Fallback: compute peak-to-peak over entire window
                 if self.console:
-                    self.console.append_to_console(f"TrendView: Not enough trigger points detected in selected frame")
-                return
-
-            direct_values = []
-            for i in range(len(filtered_trigger_indices) - 1):
-                start_idx = filtered_trigger_indices[i]
-                end_idx = filtered_trigger_indices[i + 1]
-                if end_idx <= start_idx:
-                    continue
-                segment_data = channel_data[start_idx:end_idx]
-                if len(segment_data) == 0:
-                    continue
-                peak_to_peak = segment_data.max() - segment_data.min()
-                direct_values.append(peak_to_peak)
+                    self.console.append_to_console(f"TrendView: Not enough triggers in selected frame, using window p2p fallback")
+                direct_values = [float(np.max(channel_data) - np.min(channel_data))]
+            else:
+                direct_values = []
+                for i in range(len(filtered_trigger_indices) - 1):
+                    start_idx = filtered_trigger_indices[i]
+                    end_idx = filtered_trigger_indices[i + 1]
+                    if end_idx <= start_idx:
+                        continue
+                    segment_data = channel_data[start_idx:end_idx]
+                    if len(segment_data) == 0:
+                        continue
+                    peak_to_peak = segment_data.max() - segment_data.min()
+                    direct_values.append(peak_to_peak)
 
             if not direct_values:
                 if self.console:
-                    self.console.append_to_console(f"TrendView: No valid segments for peak-to-peak calculation in selected frame")
-                return
+                    self.console.append_to_console(f"TrendView: No valid segments in selected frame, using window p2p fallback")
+                direct_values = [float(np.max(channel_data) - np.min(channel_data))]
 
             direct_average = np.mean(direct_values)
             timestamp = datetime.now().timestamp()

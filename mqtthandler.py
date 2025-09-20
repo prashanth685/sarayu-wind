@@ -1,6 +1,7 @@
 import paho.mqtt.client as mqtt
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 import struct
+import re
 import json
 import logging
 from datetime import datetime
@@ -11,7 +12,8 @@ from collections import defaultdict
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class MQTTHandler(QObject):
-    data_received = pyqtSignal(str, str, str, list, int, int)  # feature_name, tag_name, model_name, values, sample_rate, frame_index
+    # feature_name, tag_name, model_name, channel_name (or None), values, sample_rate, frame_index
+    data_received = pyqtSignal(str, str, str, object, list, int, int)
     connection_status = pyqtSignal(str)
     save_status = pyqtSignal(str)
 
@@ -25,7 +27,10 @@ class MQTTHandler(QObject):
         self.connected = False
         self.subscribed_topics = []
         self.data_queue = queue.Queue()
-        self.batch_interval_ms = 50  # Adjusted for responsive updates
+        # Base batch interval, will adapt based on queue load
+        self.batch_interval_ms = 80
+        self.min_interval_ms = 40
+        self.max_interval_ms = 200
         self.processing_thread = None
         self.running = False
         self.channel_counts = {}
@@ -46,7 +51,18 @@ class MQTTHandler(QObject):
             "Polar Plot": ["PolarPlot"],
             "Report": ["Report"]
         }
-        self.all_channels_features = ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]
+        # Features that must receive all channels together
+        self.all_channels_features = [
+            "Time View",
+            "Time Report",
+            "Tabular View",
+            "Trend View",
+            "Multiple Trend View",
+            "Waterfall",
+            "Orbit",
+            "Bode Plot",
+            "Centerline"
+        ]
         logging.debug(f"Initializing MQTTHandler with project_name: {project_name}, broker: {broker}")
 
     def add_active_feature(self, feature_name, model_name, channel=None):
@@ -93,7 +109,17 @@ class MQTTHandler(QObject):
             channel_count_map = {"DAQ4CH": 4, "DAQ8CH": 8, "DAQ10CH": 10}
             raw_channel_count = project_data.get("channel_count", 4)
             try:
-                channel_count = channel_count_map.get(raw_channel_count, int(raw_channel_count))
+                if isinstance(raw_channel_count, str):
+                    raw_norm = str(raw_channel_count).strip().upper().replace(" ", "").replace("_", "")
+                    channel_count = channel_count_map.get(raw_norm)
+                    if channel_count is None:
+                        m = re.search(r"(\d+)", raw_norm)
+                        if m:
+                            channel_count = int(m.group(1))
+                        else:
+                            channel_count = int(raw_norm)
+                else:
+                    channel_count = int(raw_channel_count)
                 if channel_count not in [4, 8, 10]:
                     raise ValueError(f"Invalid channel count: {channel_count}")
             except (ValueError, TypeError) as e:
@@ -125,10 +151,8 @@ class MQTTHandler(QObject):
 
     def on_message(self, client, userdata, msg):
         try:
-            topic = msg.topic
-            payload = msg.payload
-            self.data_queue.put((topic, payload, datetime.now()))
-            logging.debug(f"Queued message for topic {topic}, payload size: {len(payload)} bytes")
+            self.data_queue.put((msg.topic, msg.payload, datetime.now()))
+            # Avoid chatty debug logs per message in hot path
         except Exception as e:
             logging.error(f"Error queuing MQTT message: {str(e)}")
 
@@ -138,7 +162,24 @@ class MQTTHandler(QObject):
                 try:
                     topic, payload, timestamp = self.data_queue.get(timeout=self.batch_interval_ms / 1000.0)
                 except queue.Empty:
+                    # Lightly relax interval when idle
+                    self.batch_interval_ms = max(self.min_interval_ms, int(self.batch_interval_ms * 0.9))
                     continue
+
+                # Drain the queue quickly and keep only the latest message (coalescing)
+                drained = 0
+                while True:
+                    try:
+                        topic, payload, timestamp = self.data_queue.get_nowait()
+                        drained += 1
+                    except queue.Empty:
+                        break
+
+                # Adapt interval based on backlog processed
+                if drained > 5:
+                    self.batch_interval_ms = min(self.max_interval_ms, int(self.batch_interval_ms * 1.2))
+                elif drained == 0:
+                    self.batch_interval_ms = max(self.min_interval_ms, int(self.batch_interval_ms * 0.95))
 
                 project_name, model_name, tag_name = self.parse_topic(topic)
                 if not tag_name or project_name != self.project_name or not model_name:
@@ -151,6 +192,12 @@ class MQTTHandler(QObject):
                 if not model:
                     logging.error(f"Model {model_name} not found")
                     continue
+                # Prepare actual channel names from the model for main channels
+                channel_names = []
+                try:
+                    channel_names = [ch.get("channelName") for ch in model.get("channels", [])]
+                except Exception:
+                    channel_names = []
 
                 try:
                     values = None
@@ -275,23 +322,27 @@ class MQTTHandler(QObject):
                             logging.error(f"Failed to save history message: {msg}")
                             self.save_status.emit(f"Failed to save history message: {msg}")
 
-                    for feature_name in self.active_features:
+                    for feature_name in list(self.active_features.keys()):
                         if model_name in self.active_features[feature_name]:
                             active_channels = self.active_features[feature_name][model_name]
                             if feature_name in self.all_channels_features:
                                 if None in active_channels or active_channels:
-                                    self.data_received.emit(feature_name, tag_name, model_name, values, sample_rate, frame_index)
-                                    logging.debug(f"Emitted data for {feature_name}/{tag_name}/{model_name}: all channels, frame {frame_index}")
+                                    # channel_name=None indicates all-channel payload
+                                    self.data_received.emit(feature_name, tag_name, model_name, None, values, sample_rate, frame_index)
+                                    # Reduce debug noise in hot path
                             else:
                                 for ch_idx in range(len(values)):
-                                    if ch_idx < main_channels:
-                                        channel_name = f"Channel_{ch_idx + 1}"
+                                    # Use actual channel names for main channels
+                                    if ch_idx < main_channels and ch_idx < len(channel_names) and channel_names[ch_idx]:
+                                        ch_key = channel_names[ch_idx]
                                     else:
+                                        # Fallback to tacho naming for non-main channels
                                         tacho_idx = ch_idx - main_channels + 1
-                                        channel_name = f"Tacho_{tacho_idx}"
-                                    if channel_name in active_channels or None in active_channels:
-                                        self.data_received.emit(feature_name, tag_name, model_name, values[ch_idx], sample_rate, frame_index)
-                                        logging.debug(f"Emitted data for {feature_name}/{tag_name}/{model_name}/{channel_name}: frame {frame_index}")
+                                        ch_key = f"Tacho_{tacho_idx}"
+
+                                    if ch_key in active_channels or None in active_channels:
+                                        # Emit per-channel payload with channel name
+                                        self.data_received.emit(feature_name, tag_name, model_name, ch_key, values[ch_idx], sample_rate, frame_index)
 
                 except Exception as e:
                     logging.error(f"Error processing payload for topic {topic}: {str(e)}")

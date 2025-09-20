@@ -1,4 +1,5 @@
-from PyQt5.QtWidgets import QWidget, QHBoxLayout, QTextEdit, QPushButton, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPlainTextEdit, QPushButton, QSizePolicy
+from PyQt5.QtCore import QTimer
 import logging
 
 class Console(QWidget):
@@ -7,6 +8,12 @@ class Console(QWidget):
         self.parent = parent
         self.initUI()
         self.minimize_console()
+        # Buffered console to avoid UI thrash
+        self._buffer = []
+        self._flush_timer = QTimer(self)
+        self._flush_timer.setInterval(400)  # ms
+        self._flush_timer.timeout.connect(self.flush_buffer)
+        self._max_lines = 500
 
     def initUI(self):
         self.button_container = QWidget()
@@ -51,11 +58,11 @@ class Console(QWidget):
             QPushButton:pressed { background-color: #357abd; }
         """)
         button_layout.addWidget(self.maximize_button)
-        self.console_message_area = QTextEdit()
+        self.console_message_area = QPlainTextEdit()
         self.console_message_area.setReadOnly(True)
         self.console_message_area.setFixedHeight(200)
         self.console_message_area.setStyleSheet("""
-            QTextEdit { 
+            QPlainTextEdit { 
                 background-color: #0a0a0a; 
                 color: #e0e0e0; 
                 border: none; 
@@ -68,11 +75,44 @@ class Console(QWidget):
         self.minimize_button.hide()
 
     def append_to_console(self, text):
+        # Log minimal info and buffer writes to UI
         if "MQTT" in text or "mqtt" in text or "layout" in text.lower():
             logging.info(text)
-            if self.console_message_area.isVisible():
-                self.console_message_area.append(text)
-                self.console_message_area.ensureCursorVisible()
+            # Buffer messages; flush timer will handle UI append
+            self._buffer.append(text)
+            if not self._flush_timer.isActive():
+                self._flush_timer.start()
+
+    def flush_buffer(self):
+        if not self.console_message_area.isVisible():
+            # If hidden, keep buffer small to avoid memory growth
+            if len(self._buffer) > 100:
+                self._buffer = self._buffer[-100:]
+            return
+        if not self._buffer:
+            self._flush_timer.stop()
+            return
+        try:
+            chunk = "\n".join(self._buffer)
+            self._buffer.clear()
+            self.console_message_area.appendPlainText(chunk)
+            self.console_message_area.ensureCursorVisible()
+            # Cap the total number of lines to avoid QTextEdit slowdown
+            doc = self.console_message_area.document()
+            if doc.blockCount() > self._max_lines:
+                cursor = self.console_message_area.textCursor()
+                cursor.movePosition(cursor.Start)
+                cursor.select(cursor.LineUnderCursor)
+                # Remove oldest blocks until within limit
+                to_remove = doc.blockCount() - self._max_lines
+                while to_remove > 0:
+                    cursor.select(cursor.LineUnderCursor)
+                    cursor.removeSelectedText()
+                    cursor.deleteChar()  # remove newline
+                    cursor.movePosition(cursor.NextBlock)
+                    to_remove -= 1
+        except Exception as e:
+            logging.error(f"Error flushing console buffer: {str(e)}")
 
     def clear_console(self):
         try:

@@ -66,6 +66,7 @@ class DashboardWindow(QWidget):
         self.db = db
         self.email = email
         self.auth_window = auth_window
+
         self.current_project = None
         self.channel_count = None
         self.open_dashboards = {}
@@ -84,6 +85,9 @@ class DashboardWindow(QWidget):
         self.last_selection_payload_by_model = {}
         self._freqplot_key = None
         self.selected_channel = None  # Store the currently selected channel from TreeView
+        # Debounce maps to collapse rapid updates per feature instance
+        self._debounce_timers = {}
+        self._debounce_payloads = {}
 
         self.initUI()
         self.deferred_initialization()
@@ -316,10 +320,13 @@ class DashboardWindow(QWidget):
         try:
             if not self.db.is_connected():
                 self.db.reconnect()
-            success, message = self.db.update_project(project_name, models, channel_count)
+            # Use the correct database API: edit_project(old_name, new_name, updated_models, channel_count)
+            old_name = self.current_project
+            success, message = self.db.edit_project(old_name, project_name, updated_models=models, channel_count=channel_count)
             if success:
                 QMessageBox.information(self, "Success", f"Project '{project_name}' updated successfully!")
                 logging.info(f"Updated project: {project_name} with {len(models)} models")
+                # Update current project reference and reload
                 self.load_project(project_name)
             else:
                 QMessageBox.warning(self, "Error", message)
@@ -344,6 +351,9 @@ class DashboardWindow(QWidget):
 
     def load_project(self, project_name):
         self.current_project = project_name
+        # Reset any stale selections/state so updates apply globally
+        self.selected_channel = None
+        self.last_selection_payload_by_model = {}
         project_data = self.db.get_project_data(project_name)
         if not project_data:
             self.console.append_to_console(f"Error: Project {project_name} not found.")
@@ -360,7 +370,17 @@ class DashboardWindow(QWidget):
         raw_channel_count = project_data.get("channel_count", 4)
         try:
             if isinstance(raw_channel_count, str):
-                self.channel_count = channel_count_map.get(raw_channel_count, int(raw_channel_count))
+                raw_norm = str(raw_channel_count).strip().upper().replace(" ", "").replace("_", "")
+                # Try direct known keys
+                self.channel_count = channel_count_map.get(raw_norm)
+                if self.channel_count is None:
+                    # Extract digits like '10' from 'DAQ10CH'
+                    m = re.search(r"(\d+)", raw_norm)
+                    if m:
+                        self.channel_count = int(m.group(1))
+                    else:
+                        # Last resort
+                        self.channel_count = int(raw_norm)
             else:
                 self.channel_count = int(raw_channel_count)
             if self.channel_count not in [4, 8, 10]:
@@ -459,7 +479,7 @@ class DashboardWindow(QWidget):
             logging.error(f"Failed to retrieve project tags: {str(e)}")
             return []
 
-    def on_data_received(self, feature_name, tag_name, model_name, values, sample_rate, frame_index):
+    def on_data_received(self, feature_name, tag_name, model_name, channel_name, values, sample_rate, frame_index):
         try:
             for key, feature_instance in self.feature_instances.items():
                 instance_feature, instance_model, instance_channel, _ = key
@@ -468,36 +488,97 @@ class DashboardWindow(QWidget):
                 mapped_features = self.mqtt_handler.feature_mapping[feature_name]
                 if instance_feature not in mapped_features and instance_feature != feature_name:
                     continue
-                if instance_feature in ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]:
-                    if instance_channel is None:
-                        QTimer.singleShot(0, lambda: self._update_feature(
-                            instance_feature, instance_model, instance_channel,
-                            feature_instance, tag_name, values, sample_rate, frame_index
-                        ))
+
+                # Features that expect all channels at once
+                if instance_feature in [
+                    "Time View",
+                    "Time Report",
+                    "Tabular View",
+                    "Trend View",
+                    "Multiple Trend View",
+                    "Waterfall",
+                    "Orbit",
+                    "Bode Plot",
+                    "Centerline"
+                ]:
+                    if channel_name is None:
+                        # Route all-channel payloads
+                        if instance_feature == "Trend View":
+                            # Trend View instances are per-channel but need the full set of channels
+                            dkey = (instance_feature, instance_model, instance_channel, id(feature_instance))
+                            self._schedule_feature_update(dkey, instance_feature, instance_model, instance_channel,
+                                                          feature_instance, tag_name, values, sample_rate, frame_index)
+                        elif instance_channel is None:
+                            # Other all-channel features have instance_channel None
+                            dkey = (instance_feature, instance_model, instance_channel, id(feature_instance))
+                            self._schedule_feature_update(dkey, instance_feature, instance_model, instance_channel,
+                                                          feature_instance, tag_name, values, sample_rate, frame_index)
                 else:
-                    for ch_idx in range(len(values)):
-                        channel_name = f"Channel_{ch_idx + 1}" if ch_idx < self.channel_count else f"Tacho_{ch_idx - self.channel_count + 1}"
-                        if instance_channel is None or instance_channel == channel_name:
-                            QTimer.singleShot(0, lambda v=values[ch_idx], ch=channel_name: self._update_feature(
-                                instance_feature, instance_model, ch,
-                                feature_instance, tag_name, v, sample_rate, frame_index
-                            ))
-            logging.debug(f"Processed data for {feature_name}/{model_name}, frame {frame_index}")
+                    # Per-channel features: only route when MQTT provided a channel_name and it matches the instance channel
+                    if channel_name is None:
+                        continue
+                    if instance_channel is None or instance_channel == channel_name:
+                        dkey = (instance_feature, instance_model, channel_name, id(feature_instance))
+                        self._schedule_feature_update(dkey, instance_feature, instance_model, channel_name,
+                                                      feature_instance, tag_name, values, sample_rate, frame_index)
+            logging.debug(f"Processed data for {feature_name}/{model_name}, frame {frame_index}, channel={channel_name or 'ALL'}")
         except Exception as e:
             logging.error(f"Error in on_data_received for {feature_name}/{model_name}, frame {frame_index}: {str(e)}")
             self.console.append_to_console(f"Error processing data for {feature_name}: {str(e)}")
 
+    def _schedule_feature_update(self, dkey, feature_name, model_name, channel, feature_instance, tag_name, values, sample_rate, frame_index):
+        """Debounce updates per feature instance key, keeping only the latest payload within a short window."""
+        try:
+            # Save latest payload for this key
+            self._debounce_payloads[dkey] = (feature_name, model_name, channel, feature_instance, tag_name, values, sample_rate, frame_index)
+            timer = self._debounce_timers.get(dkey)
+            if not timer:
+                timer = QTimer(self)
+                timer.setSingleShot(True)
+                # Use small debounce window to collapse bursts
+                timer.setInterval(50)
+                def fire(dk=dkey):
+                    payload = self._debounce_payloads.pop(dk, None)
+                    if payload:
+                        f, m, ch, inst, t, v, sr, fi = payload
+                        self._update_feature(f, m, ch, inst, t, v, sr, fi)
+                    # Timer will be recreated lazily next time
+                    self._debounce_timers.pop(dk, None)
+                timer.timeout.connect(fire)
+                self._debounce_timers[dkey] = timer
+            # Restart timer to debounce
+            timer.start()
+        except Exception as e:
+            logging.error(f"Error scheduling feature update: {e}")
+
     def _update_feature(self, feature_name, model_name, channel, feature_instance, tag_name, values, sample_rate, frame_index):
         try:
             if hasattr(feature_instance, 'on_data_received'):
-                feature_instance.on_data_received(tag_name, model_name, values, sample_rate, frame_index)
+                try:
+                    # Preferred signature: (tag_name, model_name, values, sample_rate, frame_index)
+                    feature_instance.on_data_received(tag_name, model_name, values, sample_rate, frame_index)
+                except TypeError:
+                    try:
+                        # Some features (e.g., Bode Plot) expect feature_name as first arg
+                        feature_instance.on_data_received(feature_name, tag_name, model_name, values, sample_rate, frame_index)
+                    except TypeError:
+                        # Backward-compat signature: (tag_name, model_name, values, sample_rate)
+                        feature_instance.on_data_received(tag_name, model_name, values, sample_rate)
                 logging.debug(f"Updated {feature_name} for {model_name}/{channel or 'all channels'}, frame {frame_index}")
         except Exception as e:
             logging.error(f"Error updating {feature_name} for {model_name}/{channel or 'all channels'}: {str(e)}")
             self.console.append_to_console(f"Error updating {feature_name}: {str(e)}")
 
     def load_project_features(self):
-        self.tree_view.load_project_data(self.current_project)
+        # TreeView exposes update_project to (re)load models/channels for a project
+        try:
+            self.tree_view.update_project(self.current_project)
+        except AttributeError:
+            # Fallback compatibility: older TreeView may have add_project_to_tree
+            if hasattr(self.tree_view, 'add_project_to_tree'):
+                self.tree_view.add_project_to_tree(self.current_project)
+            else:
+                logging.error("TreeView does not support project loading APIs (update_project/add_project_to_tree)")
 
     def on_mqtt_status(self, status):
         self.mqtt_connected = "Connected" in status
@@ -699,12 +780,21 @@ class DashboardWindow(QWidget):
         if not channel_names:
             QMessageBox.warning(self, "Error", "No channels available for the model.")
             return
-
         current_console_height = self.console.console_message_area.height()
         self.console.console_message_area.setFixedHeight(current_console_height)
 
         try:
-            if feature_name in ["Time View", "Time Report", "Tabular View", "Multiple Trend View"]:
+            # Determine which channels to open for this feature
+            if feature_name in [
+                "Time View",
+                "Time Report",
+                "Tabular View",
+                "Multiple Trend View",
+                "Waterfall",
+                "Orbit",
+                "Bode Plot",
+                "Centerline"
+            ]:
                 channel_list = [None]
             else:
                 if self.selected_channel and self.selected_channel in channel_names:
@@ -887,9 +977,28 @@ class DashboardWindow(QWidget):
                 self.console.append_to_console("Project or model missing for selection.")
                 return
 
-            self.last_selection_payload_by_model[model_name] = selected_payload
+            # Normalize payload keys for all features
+            normalized = dict(selected_payload)
+            # Provide both 'channelData' and 'message' for compatibility
+            cd = normalized.get("channelData")
+            if cd is None and isinstance(normalized.get("message"), list):
+                cd = normalized.get("message")
+                normalized["channelData"] = cd
+            if normalized.get("message") is None and isinstance(cd, list):
+                normalized["message"] = cd
+            # Ensure common meta fields
+            if "numberOfChannels" not in normalized and "num_main" in normalized:
+                normalized["numberOfChannels"] = normalized.get("num_main")
+            if "tacoChannelCount" not in normalized and "num_tacho" in normalized:
+                normalized["tacoChannelCount"] = normalized.get("num_tacho")
+            if "samplingRate" not in normalized and "Fs" in normalized:
+                normalized["samplingRate"] = normalized.get("Fs")
+            if "samplingSize" not in normalized and "N" in normalized:
+                normalized["samplingSize"] = normalized.get("N")
+
+            self.last_selection_payload_by_model[model_name] = normalized
             self.console.append_to_console(
-                f"Selected frame {selected_payload.get('frameIndex')} from {selected_payload.get('filename')} "
+                f"Selected frame {normalized.get('frameIndex')} from {normalized.get('filename')} "
                 f"stored for model {model_name}. Now choose a feature to view."
             )
 
@@ -908,6 +1017,9 @@ class DashboardWindow(QWidget):
                     self.main_section.arrange_layout()
                 except Exception as e:
                     logging.error(f"Error closing FrequencyPlot window after selection: {e}")
+
+            # Apply selected frame to features and auto-open defaults if needed
+            self._apply_selected_frame_to_features(model_name)
         except Exception as e:
             logging.error(f"Failed to handle frequency selection: {str(e)}")
             self.console.append_to_console(f"Error applying selection: {str(e)}")
@@ -975,3 +1087,26 @@ class DashboardWindow(QWidget):
             logging.debug(f"Completed cleanup for subwindow: {key}")
         except Exception as e:
             logging.error(f"Error cleaning up subwindow for {key}: {str(e)}")
+
+    def _apply_selected_frame_to_features(self, model_name: str):
+        try:
+            payload = self.last_selection_payload_by_model.get(model_name)
+            if not payload:
+                return
+            # Update already-open features for this model
+            updated_count = 0
+            for key, instance in list(self.feature_instances.items()):
+                try:
+                    feature_name, k_model, k_channel, _uid = key
+                    if k_model != model_name:
+                        continue
+                    if hasattr(instance, "load_selected_frame"):
+                        instance.load_selected_frame(payload)
+                        updated_count += 1
+                        logging.debug(f"Applied selected frame to {feature_name} for model {model_name}")
+                except Exception as e:
+                    logging.error(f"Error applying selected frame to {key}: {e}")
+            # Do not auto-open any features; rely on user-selected subwindows only
+            self.console.append_to_console(f"Applied selected frame to {updated_count} open feature(s) for model {model_name}.")
+        except Exception as e:
+            logging.error(f"Error in _apply_selected_frame_to_features: {e}")

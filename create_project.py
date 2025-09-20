@@ -1,14 +1,13 @@
-
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QPushButton, QLabel, QMessageBox, QScrollArea, QComboBox, QApplication, QTableWidget, QTableWidgetItem, QHeaderView
 from PyQt5.QtCore import Qt, pyqtSignal
 import sys
 import datetime
 import logging
 
-app = QApplication(sys.argv)
-
-# 🌐 Global stylesheet for QMessageBox and QComboBox
-app.setStyleSheet("""
+app = QApplication.instance()
+if app:
+    # Global stylesheet for QMessageBox and QComboBox
+    app.setStyleSheet("""
     QMessageBox {
         background-color: #fefefe;
         color: #1a202c;

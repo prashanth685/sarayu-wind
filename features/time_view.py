@@ -262,10 +262,6 @@ class TimeViewFeature:
         self.total_channels = channel_count
         self.main_channels = channel_count - self.tacho_channels_count
 
-        self.scroll_content = QWidget()
-        self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_content.setStyleSheet("background-color: #d1d6d9; border-radius: 5px; padding: 10px;")
-
         for i in range(self.num_plots):
             plot_widget = PlotWidget()
             plot_widget.setMinimumHeight(200)
@@ -286,6 +282,12 @@ class TimeViewFeature:
                 plot_widget.getAxis('left').setLabel(f"{channel_name} ({y_label})")
 
             plot = plot_widget.plot([], [], pen=mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=1))
+            # Enable performance optimizations
+            try:
+                plot.setDownsampling(auto=True)
+                plot.setClipToView(True)
+            except Exception:
+                pass
             self.plot_widgets.append(plot_widget)
             self.plots.append(plot)
 
@@ -441,9 +443,9 @@ class TimeViewFeature:
                         elif props["unit"] == "um":
                             new_data *= 25.4
                 elif ch == self.main_channels:
-                    new_data = volts * 10
+                    new_data = volts  * 20
                 else:
-                    new_data = volts
+                    new_data = volts 
 
                 if len(self.fifo_data[ch]) != self.fifo_window_samples:
                     self.fifo_data[ch] = np.zeros(self.fifo_window_samples)
@@ -468,33 +470,24 @@ class TimeViewFeature:
             self.log_and_set_status(f"Error processing data: {str(e)}")
 
     def refresh_plots(self):
-        if self.is_scrolling:
+        # Skip refresh until plots/buffers are initialized
+        if self.is_scrolling or not self.is_initialized or not self.num_plots or self.num_plots <= 0:
             return
         try:
-            for i in range(self.num_plots):
-                if self.needs_refresh[i] and len(self.fifo_data[i]) > 0 and len(self.fifo_times[i]) > 0:
-                    self.plot_widgets[i].clear()
-                    self.plot_widgets[i].addLegend()
-                    self.plot_widgets[i].showGrid(x=True, y=True)
-
-                    channel_name = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
-                    unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
-                    y_label = f"Amplitude ({unit})" if i < self.main_channels else "Value"
-                    if i >= self.main_channels:
-                        ylabel_name = "Frequency" if i == self.main_channels else "Trigger"
-                        self.plot_widgets[i].setYRange(-0.5, 1.5, padding=0)
-                        self.plot_widgets[i].getAxis('left').setLabel(f"{ylabel_name} ({y_label})")
-
-                    time_data = np.array([t.timestamp() for t in self.fifo_times[i]])
-                    pen = mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=1)
-                    self.plots[i] = self.plot_widgets[i].plot(time_data, self.fifo_data[i], pen=pen, name=channel_name)
-
-                    if len(time_data) > 0:
-                        self.plot_widgets[i].setXRange(min(time_data), max(time_data), padding=0.1)
-                    self.plot_widgets[i].enableAutoRange(axis='y')
-                    self.plot_widgets[i].getAxis('bottom').setStyle(tickTextOffset=10)
-
-                    self.needs_refresh[i] = False
+            for i in range(int(self.num_plots)):
+                if not self.needs_refresh[i]:
+                    continue
+                if len(self.fifo_data[i]) == 0 or len(self.fifo_times[i]) == 0:
+                    continue
+                # Only update data on the existing PlotDataItem to avoid churn
+                time_data = np.array([t.timestamp() for t in self.fifo_times[i]])
+                self.plots[i].setData(time_data, self.fifo_data[i])
+                if len(time_data) > 0:
+                    self.plot_widgets[i].setXRange(time_data.min(), time_data.max(), padding=0.1)
+                # Let pyqtgraph auto-range Y efficiently
+                self.plot_widgets[i].enableAutoRange(axis='y')
+                self.plot_widgets[i].getAxis('bottom').setStyle(tickTextOffset=10)
+                self.needs_refresh[i] = False
         except Exception as e:
             logging.error(f"Error refreshing plots: {str(e)}")
             self.log_and_set_status(f"Error refreshing plots: {str(e)}")
