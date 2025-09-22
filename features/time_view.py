@@ -6,6 +6,7 @@ from pyqtgraph import PlotWidget, mkPen, AxisItem, SignalProxy, InfiniteLine
 from datetime import datetime, timedelta
 import time
 import logging
+from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -53,6 +54,7 @@ class TimeViewFeature:
         self.tacho_channels_count = 2
         self.total_channels = None
         self.scaling_factor = 3.3 / 65535
+        self.off_set=32768
         self.num_plots = None
         self.samples_per_channel = None
         self.window_seconds = 1
@@ -276,7 +278,10 @@ class TimeViewFeature:
             unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
             y_label = f"Amplitude ({unit})" if i < self.main_channels else "Value"
 
-            if i >= self.main_channels:
+            if i < self.main_channels:
+                # Set label for main channels too
+                plot_widget.getAxis('left').setLabel(f"{channel_name} ({y_label})")
+            else:
                 channel_name = "Frequency" if i == self.main_channels else "Trigger"
                 plot_widget.setYRange(-0.5, 1.5, padding=0)
                 plot_widget.getAxis('left').setLabel(f"{channel_name} ({y_label})")
@@ -385,7 +390,9 @@ class TimeViewFeature:
         self.fifo_window_samples = new_fifo_window_samples
         self.previous_window_seconds = self.window_seconds
         logging.debug(f"Updated FIFO buffers to {self.window_seconds} seconds, {self.fifo_window_samples} samples")
-        self.initialize_plots(self.num_plots)
+        # Do NOT reinitialize plots here; that would clear existing buffers and lose continuity.
+        # Existing plots will render the resized buffers on the next refresh.
+        self.refresh_plots()
 
     def get_widget(self):
         return self.widget
@@ -419,9 +426,7 @@ class TimeViewFeature:
                 self.num_plots = self.total_channels
                 self.initialize_plots(self.total_channels)
 
-            current_time = datetime.now()
             time_step = 1.0 / sample_rate
-            new_times = np.array([current_time - timedelta(seconds=(self.samples_per_channel - 1 - i) * time_step) for i in range(self.samples_per_channel)])
 
             for ch in range(self.total_channels):
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch + 1}"
@@ -433,23 +438,36 @@ class TimeViewFeature:
                     "sensitivity": 1.0,
                     "convertedSensitivity": 1.0
                 })
-                volts = np.array(values[ch]) * self.scaling_factor
+                volts = counts_to_volts(values[ch], self.scaling_factor, self.off_set)
+                # Build continuous timestamps by extending from previous last timestamp if available
+                if isinstance(self.fifo_times[ch], np.ndarray) and self.fifo_times[ch].size > 0:
+                    last_time = self.fifo_times[ch][-1]
+                    # Ensure last_time is datetime
+                    try:
+                        base_time = last_time if isinstance(last_time, datetime) else datetime.fromtimestamp(float(last_time))
+                    except Exception:
+                        base_time = datetime.now()
+                    new_times = np.array([base_time + timedelta(seconds=(i + 1) * time_step) for i in range(self.samples_per_channel)])
+                else:
+                    # First fill: anchor to now and backfill
+                    current_time = datetime.now()
+                    new_times = np.array([current_time - timedelta(seconds=(self.samples_per_channel - 1 - i) * time_step) for i in range(self.samples_per_channel)])
+                # new_data = volts
 
                 if ch < self.main_channels:
-                    new_data = volts * (props["correctionValue"] * props["gain"]) / props["sensitivity"]
-                    if props["type"] == "Displacement":
-                        if props["unit"] == "mm":
-                            new_data *= 0.0254
-                        elif props["unit"] == "um":
-                            new_data *= 25.4
+                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
+                    unit = (props.get("unit", "mil") or "mil").lower()
+                    new_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
                 elif ch == self.main_channels:
-                    new_data = volts  * 20
+                    new_data = volts / 100.0
                 else:
                     new_data = volts 
 
                 if len(self.fifo_data[ch]) != self.fifo_window_samples:
                     self.fifo_data[ch] = np.zeros(self.fifo_window_samples)
-                    self.fifo_times[ch] = np.array([current_time - timedelta(seconds=(self.fifo_window_samples - 1 - j) * time_step) for j in range(self.fifo_window_samples)])
+                    # Initialize time buffer so that it ends at the last new_times value
+                    end_time = new_times[-1] if isinstance(new_times[-1], datetime) else datetime.now()
+                    self.fifo_times[ch] = np.array([end_time - timedelta(seconds=(self.fifo_window_samples - 1 - j) * time_step) for j in range(self.fifo_window_samples)])
 
                 self.fifo_data[ch] = np.roll(self.fifo_data[ch], -self.samples_per_channel)
                 self.fifo_data[ch][-self.samples_per_channel:] = new_data
@@ -457,12 +475,8 @@ class TimeViewFeature:
                 self.fifo_times[ch][-self.samples_per_channel:] = new_times
                 self.needs_refresh[ch] = True
 
-            for ch in range(self.total_channels):
-                if len(self.fifo_times[ch]) > 1:
-                    sort_indices = np.argsort([t.timestamp() for t in self.fifo_times[ch]])
-                    self.fifo_times[ch] = self.fifo_times[ch][sort_indices]
-                    self.fifo_data[ch] = self.fifo_data[ch][sort_indices]
-                    self.needs_refresh[ch] = True
+            # Do not sort the time arrays each update; rolling maintains chronological order
+            # Simply mark channels for refresh (already set during update)
 
             self.refresh_plots()
         except Exception as e:
@@ -545,16 +559,13 @@ class TimeViewFeature:
                     "sensitivity": 1.0,
                     "convertedSensitivity": 1.0
                 })
-                volts = np.array(values[ch]) * self.scaling_factor
+                volts = counts_to_volts(values[ch], self.scaling_factor, self.off_set)
                 if ch < self.main_channels:
-                    new_data = volts * (props["correctionValue"] * props["gain"]) / props["sensitivity"]
-                    if props["type"] == "Displacement":
-                        if props["unit"] == "mm":
-                            new_data *= 0.0254
-                        elif props["unit"] == "um":
-                            new_data *= 25.4
+                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
+                    unit = (props.get("unit", "mil") or "mil").lower()
+                    new_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
                 elif ch == self.main_channels:
-                    new_data = volts * 10
+                    new_data = volts / 100.0
                 else:
                     new_data = volts
 
@@ -624,16 +635,23 @@ class TimeViewFeature:
                     "convertedSensitivity": 1.0
                 })
 
-                volts = np.array(values[ch]) * self.scaling_factor
+                volts = (np.array(values[ch]) - self.off_set) * self.scaling_factor
                 if ch < self.main_channels:
-                    new_data = volts * (props["correctionValue"] * props["gain"]) / props["sensitivity"]
-                    if props["type"] == "Displacement":
-                        if props["unit"] == "mm":
-                            new_data *= 0.0254
-                        elif props["unit"] == "um":
-                            new_data *= 25.4
+                    base_value = volts * (props["correctionValue"] * props["gain"]) / max(props["sensitivity"], 1e-12)
+                    unit = (props.get("unit", "mil") or "mil").lower()
+                    if props.get("type", "Displacement") == "Displacement":
+                        if unit == "mil":
+                            new_data = volts / 25.4
+                        elif unit == "um":
+                            new_data = base_value
+                        elif unit == "mm":
+                            new_data = base_value / 1000.0
+                        else:
+                            new_data = base_value
+                    else:
+                        new_data = base_value
                 elif ch == self.main_channels:
-                    new_data = volts * 10
+                    new_data = volts / 100.0
                 else:
                     new_data = volts
 

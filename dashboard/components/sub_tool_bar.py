@@ -303,10 +303,8 @@ class SubToolBar(QWidget):
             self.is_saving = is_saving
             if is_saving:
                 self.start_blinking()
-                self.start_saving_triggered.emit()
             else:
                 self.stop_blinking()
-                self.stop_saving_triggered.emit()
             self.update_subtoolbar()
             logging.debug(f"SubToolBar: Updated saving state to {is_saving}")
         else:

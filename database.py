@@ -105,7 +105,7 @@ class Database:
             logging.error(f"Models must be a list, received: {type(models)}")
             return False, f"Models must be a list, received: {type(models)}"
 
-        valid_units = ["mil", "mm", "um"]
+        valid_units = ["mil", "mm", "um","v"]
         for model in models:
             if not isinstance(model, dict) or "name" not in model or "channels" not in model:
                 logging.error(f"Each model must be a dictionary with 'name' and 'channels' fields, received: {model}")
@@ -212,7 +212,7 @@ class Database:
 
     def _calculate_channel_properties(self, channel):
         """Auto-calculate fields based on user changes (e.g., unit conversion)."""
-        valid_units = ["mil", "mm", "um"]
+        valid_units = ["mil", "mm", "um", "v"]
         unit = channel.get("unit", "mil")
         if unit is None:
             unit = "mil"  # Default to 'mil' if unit is None
@@ -226,6 +226,8 @@ class Database:
             channel["ConvertedSensitivity"] = sensitivity / 25.4  # mil to mm
         elif unit == "um":
             channel["ConvertedSensitivity"] = sensitivity * 1000  # mil to um
+        elif unit == "v":
+            channel["ConvertedSensitivity"] = sensitivity  # volts
         else:
             channel["ConvertedSensitivity"] = sensitivity  # mil
         logging.debug(f"Calculated ConvertedSensitivity for {channel['channelName']}: {channel['ConvertedSensitivity']} (unit: {unit})")
@@ -251,7 +253,7 @@ class Database:
         if new_project_name != old_project_name and self.projects_collection.find_one({"project_name": new_project_name, "email": self.email}):
             return False, f"Project '{new_project_name}' already exists!"
 
-        valid_units = ["mil", "mm", "um"]
+        valid_units = ["mil", "mm", "um", "v"]
         update_data = {"project_name": new_project_name}
         if channel_count is not None:
             update_data["channel_count"] = channel_count

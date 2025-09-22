@@ -322,18 +322,127 @@ class DashboardWindow(QWidget):
                 self.db.reconnect()
             # Use the correct database API: edit_project(old_name, new_name, updated_models, channel_count)
             old_name = self.current_project
+            # Capture currently open features (feature, model, channel) before updating the project
+            previously_open = []
+            try:
+                for key in list(self.feature_instances.keys()):
+                    feat_name, mdl_name, ch_name, _uid = key
+                    previously_open.append((feat_name, mdl_name, ch_name))
+            except Exception:
+                previously_open = []
+            was_mqtt_connected = bool(self.mqtt_connected)
             success, message = self.db.edit_project(old_name, project_name, updated_models=models, channel_count=channel_count)
             if success:
                 QMessageBox.information(self, "Success", f"Project '{project_name}' updated successfully!")
                 logging.info(f"Updated project: {project_name} with {len(models)} models")
                 # Update current project reference and reload
                 self.load_project(project_name)
+                # Reopen all previously open features (same model/channel) so they re-read latest settings
+                for feat_name, mdl_name, ch_name in previously_open:
+                    try:
+                        self.display_feature_for(feat_name, mdl_name, ch_name)
+                    except Exception as e:
+                        logging.error(f"Error reopening feature {feat_name} for {mdl_name}/{ch_name or 'No Channel'}: {e}")
+                # Restore MQTT connection if it was active before edit so live plots resume
+                if was_mqtt_connected:
+                    try:
+                        self.setup_mqtt()
+                    except Exception:
+                        logging.error("Failed to restore MQTT connection after project edit")
             else:
                 QMessageBox.warning(self, "Error", message)
                 logging.error(f"Failed to update project: {message}")
         except Exception as e:
             logging.error(f"Error updating project: {str(e)}")
             QMessageBox.warning(self, "Error", f"Failed to update project: {str(e)}")
+
+    def display_feature_for(self, feature_name: str, model_name: str, channel_name: str = None):
+        """Open a feature window for a specific model and channel, reusing display logic but honoring explicit model/channel.
+        This is used after project edits to restore previously open features with updated settings.
+        """
+        if not self.current_project:
+            QMessageBox.warning(self, "Error", "No project selected!")
+            return
+        project_data = self.db.get_project_data(self.current_project)
+        if not project_data or "models" not in project_data:
+            QMessageBox.warning(self, "Error", "No models found for the project.")
+            return
+        model = next((m for m in project_data["models"] if m.get("name") == model_name), None)
+        if not model:
+            QMessageBox.warning(self, "Error", f"Model '{model_name}' not found in project.")
+            return
+        channel_names = [ch.get("channelName") for ch in model.get("channels", [])]
+        if feature_name in [
+            "Time View", "Time Report", "Tabular View", "Multiple Trend View",
+            "Waterfall", "Orbit", "Bode Plot", "Centerline"
+        ]:
+            channels_to_open = [None]
+        else:
+            ch = channel_name if channel_name in channel_names else (channel_names[0] if channel_names else None)
+            channels_to_open = [ch]
+
+        feature_classes = {
+            "Tabular View": TabularViewFeature,
+            "Time View": TimeViewFeature,
+            "Time Report": TimeReportFeature,
+            "FFT": FFTViewFeature,
+            "Waterfall": WaterfallFeature,
+            "Centerline": CenterLineFeature,
+            "Orbit": OrbitFeature,
+            "Trend View": TrendViewFeature,
+            "Multiple Trend View": MultiTrendFeature,
+            "Bode Plot": BodePlotFeature,
+            "History Plot": HistoryPlotFeature,
+            "Polar Plot": PolarPlotFeature,
+            "Report": ReportFeature
+        }
+        if feature_name not in feature_classes:
+            QMessageBox.warning(self, "Error", f"Unknown feature: {feature_name}")
+            return
+        for ch in channels_to_open:
+            # Avoid duplicating if already open
+            existing_key = next((k for k in self.feature_instances.keys() if k[0] == feature_name and k[1] == model_name and k[2] == ch), None)
+            if existing_key:
+                try:
+                    sw = self.sub_windows.get(existing_key)
+                    if sw:
+                        sw.show(); sw.raise_(); sw.activateWindow();
+                        if sw.isMinimized():
+                            sw.showNormal()
+                except Exception:
+                    pass
+                continue
+            unique_id = int(time.time() * 1000)
+            key = (feature_name, model_name, ch, unique_id)
+            feature_kwargs = {
+                "parent": self,
+                "db": self.db,
+                "project_name": self.current_project,
+                "channel": ch,
+                "model_name": model_name,
+                "console": self.console
+            }
+            if feature_name in ["Orbit", "FFT", "Waterfall"]:
+                feature_kwargs["channel_count"] = self.channel_count
+            instance = feature_classes[feature_name](**feature_kwargs)
+            self.feature_instances[key] = instance
+            if self.mqtt_handler:
+                self.mqtt_handler.add_active_feature(feature_name, model_name, ch)
+            widget = instance.get_widget()
+            if widget:
+                sw = self.main_section.add_subwindow(widget, feature_name, channel_name=ch, model_name=model_name)
+                if sw:
+                    self.sub_windows[key] = sw
+                    sw.closeEvent = lambda event, k=key: self.on_subwindow_closed(event, k)
+                    sw.show()
+            # If a frame was previously selected for this model, apply it so plots reflect updated settings
+            payload = self.last_selection_payload_by_model.get(model_name)
+            if payload and hasattr(instance, "load_selected_frame"):
+                try:
+                    instance.load_selected_frame(payload)
+                except Exception as e:
+                    logging.error(f"Error applying selected frame to {feature_name} after edit: {e}")
+            self.current_feature = feature_name
 
     def create_project(self):
         self.display_create_project()
@@ -350,6 +459,11 @@ class DashboardWindow(QWidget):
         logging.debug("Displayed ProjectStructureWidget in MainSection")
 
     def load_project(self, project_name):
+        # Ensure any existing MQTT connection is stopped before switching projects
+        try:
+            self.cleanup_mqtt()
+        except Exception:
+            pass
         self.current_project = project_name
         # Reset any stale selections/state so updates apply globally
         self.selected_channel = None
@@ -413,7 +527,11 @@ class DashboardWindow(QWidget):
         self.file_bar.update_state(project_name=project_name)
         self.project_changed.emit(project_name)
         self.load_project_features()
-        QTimer.singleShot(0, self.setup_mqtt)
+        # Do not auto-connect to MQTT; wait for explicit user action via Connect button
+        try:
+            self.console.append_to_console("MQTT is idle. Click 'Connect to MQTT' (🔗) to start streaming.")
+        except Exception:
+            pass
 
     def setup_mqtt(self):
         if not self.current_project:
@@ -602,7 +720,15 @@ class DashboardWindow(QWidget):
             return
 
         selected_model = model_names[0]
-        filename = f"{selected_model}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Use filename from SubToolBar input; fallback to next suggested if empty
+        try:
+            input_name = getattr(self.sub_tool_bar, 'filename_edit', None)
+            filename = input_name.text().strip() if input_name else None
+        except Exception:
+            filename = None
+        if not filename:
+            # Fallback: simple timestamped default
+            filename = f"data_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
         self.mqtt_handler.start_saving(selected_model, filename)
         self.saving_filenames[selected_model] = filename
@@ -617,12 +743,35 @@ class DashboardWindow(QWidget):
 
         model_names = list(self.saving_filenames.keys())
         selected_model = model_names[0]
+        # Preserve filename for user message before clearing
+        saved_filename = self.saving_filenames.get(selected_model)
 
-        self.mqtt_handler.stop_saving(selected_model)
+        try:
+            if self.mqtt_handler:
+                self.mqtt_handler.stop_saving(selected_model)
+        except Exception as e:
+            logging.error(f"Error stopping save for {selected_model}: {e}")
         del self.saving_filenames[selected_model]
         self.is_saving = bool(self.saving_filenames)
         self.saving_state_changed.emit(self.is_saving)
-        self.console.append_to_console(f"Stopped saving for model {selected_model}")
+        # Inform the user precisely which file was saved
+        if saved_filename:
+            msg = f"Saved file as: {saved_filename}"
+            try:
+                QMessageBox.information(self, "Saved", msg)
+            except Exception:
+                pass
+            self.console.append_to_console(msg)
+        else:
+            self.console.append_to_console(f"Stopped saving for model {selected_model}")
+        # Advance filename field to next available name
+        try:
+            if hasattr(self.sub_tool_bar, 'refresh_filename'):
+                self.sub_tool_bar.refresh_filename()
+            if hasattr(self.sub_tool_bar, 'schedule_files_combo_update'):
+                self.sub_tool_bar.schedule_files_combo_update()
+        except Exception:
+            pass
 
     def save_action(self):
         if self.current_project:

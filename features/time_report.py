@@ -15,6 +15,7 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor
 import pyqtgraph as pg
 from pyqtgraph import PlotWidget, mkPen, AxisItem, InfiniteLine, SignalProxy
+from utils.signal_calibration import counts_to_volts, calibrate, convert_unit, tacho_scale
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -173,7 +174,7 @@ class TimeReportFeature:
         self.max_points_to_plot = 100000
         self.plot_colors = [
             '#0000FF', '#FF0000', '#00FF00', '#800080', '#FFA500', '#A52A2A',
-            '#FFC0CB', '#008080', '#FF4500', '#32CD32', '#00CED1', '#FFD700',
+            '#FFC0CB', '#0000FF', '#0000FF', '#0000FF', '#0000FF', '#FFD700',
             '#FF69B4', '#8A2BE2', '#FF6347', '#20B2AA', '#ADFF2F', '#9932CC',
             '#FF7F50', '#00FA9A', '#9400D3'
         ]
@@ -639,10 +640,6 @@ class TimeReportFeature:
         progress = QProgressDialog("Loading and plotting data...", "Cancel", 0, 100, self.widget)
         progress.setWindowModality(Qt.WindowModal)
         progress.setMinimumDuration(0)
-        progress.setValue(0)
-        progress.show()
-        QApplication.processEvents()
-
         try:
             # --- 1. Fetch Data ---
             progress.setLabelText("Fetching data from database...")
@@ -662,79 +659,74 @@ class TimeReportFeature:
 
             progress.setLabelText("Filtering messages by time range and validating data...")
             progress.setValue(20)
-            # Filter messages whose *start time* (createdAt) is before the selected end_time
-            # and whose *end time* (createdAt + duration) is after the selected start_time.
-            # This ensures we get messages that overlap with the selected range.
+            # Filter messages where created_at >= start_time and created_at <= end_time (matching C#)
             filtered_messages = []
             for msg in sorted_messages:
-                 try:
-                     msg_created_at_dt = datetime.fromisoformat(msg['createdAt'].replace('Z', '+00:00'))
-                     msg_created_at_ts = msg_created_at_dt.timestamp()
-                     # --- CRITICAL: Strict Validation of samplingSize and samplingRate ---
-                     sampling_size_raw = msg.get("samplingSize")
-                     sampling_rate_raw = msg.get("samplingRate")
-                     message_data_raw = msg.get("message")
+                try:
+                    msg_created_at_dt = datetime.fromisoformat(msg['createdAt'].replace('Z', '+00:00'))
+                    msg_created_at_ts = msg_created_at_dt.timestamp()
+                    # --- CRITICAL: Strict Validation of samplingSize and samplingRate ---
+                    sampling_size_raw = msg.get("samplingSize")
+                    sampling_rate_raw = msg.get("samplingRate")
+                    message_data_raw = msg.get("message")
 
-                     # Check 1: Is the field present and not None?
-                     if sampling_size_raw is None:
-                         logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' field is missing or None.")
+                    # Check 1: Is the field present and not None?
+                    if sampling_size_raw is None:
+                        logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' field is missing or None.")
+                        continue
+                    if sampling_rate_raw is None:
+                        logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' field is missing or None.")
+                        continue
+
+                    # Check 2: Is it the correct type?
+                    if not isinstance(sampling_size_raw, int):
+                         # Handle potential string representations of integers from DB
+                         if isinstance(sampling_size_raw, str) and sampling_size_raw.isdigit():
+                             try:
+                                 sampling_size_raw = int(sampling_size_raw)
+                                 logging.info(f"Converted string 'samplingSize' to int: {sampling_size_raw}")
+                             except ValueError:
+                                 pass # Conversion failed, will be caught below
+                         if not isinstance(sampling_size_raw, int):
+                             logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' is not an integer ({type(sampling_size_raw)}: {sampling_size_raw})")
+                             continue
+
+                    if not isinstance(sampling_rate_raw, (int, float)):
+                         # Handle potential string representations
+                         if isinstance(sampling_rate_raw, str):
+                             try:
+                                 sampling_rate_raw = float(sampling_rate_raw)
+                                 logging.info(f"Converted string 'samplingRate' to float: {sampling_rate_raw}")
+                             except ValueError:
+                                 pass # Conversion failed, will be caught below
+                         if not isinstance(sampling_rate_raw, (int, float)):
+                             logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' is not a number ({type(sampling_rate_raw)}: {sampling_rate_raw})")
+                             continue
+
+                    # Check 3: Is it a positive value?
+                    if sampling_size_raw <= 0:
+                        logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' is not positive ({sampling_size_raw})")
+                        continue
+                    if sampling_rate_raw <= 0:
+                        logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' is not positive ({sampling_rate_raw})")
+                        continue
+
+                    # Check 4: Is message data present?
+                    if message_data_raw is None or not isinstance(message_data_raw, (list, np.ndarray)):
+                         logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): Invalid or missing 'message' data")
                          continue
-                     if sampling_rate_raw is None:
-                         logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' field is missing or None.")
-                         continue
 
-                     # Check 2: Is it the correct type?
-                     if not isinstance(sampling_size_raw, int):
-                          # Handle potential string representations of integers from DB
-                          if isinstance(sampling_size_raw, str) and sampling_size_raw.isdigit():
-                              try:
-                                  sampling_size_raw = int(sampling_size_raw)
-                                  logging.info(f"Converted string 'samplingSize' to int: {sampling_size_raw}")
-                              except ValueError:
-                                  pass # Conversion failed, will be caught below
-                          if not isinstance(sampling_size_raw, int):
-                              logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' is not an integer ({type(sampling_size_raw)}: {sampling_size_raw})")
-                              continue
-
-                     if not isinstance(sampling_rate_raw, (int, float)):
-                          # Handle potential string representations
-                          if isinstance(sampling_rate_raw, str):
-                              try:
-                                  sampling_rate_raw = float(sampling_rate_raw)
-                                  logging.info(f"Converted string 'samplingRate' to float: {sampling_rate_raw}")
-                              except ValueError:
-                                  pass # Conversion failed, will be caught below
-                          if not isinstance(sampling_rate_raw, (int, float)):
-                              logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' is not a number ({type(sampling_rate_raw)}: {sampling_rate_raw})")
-                              continue
-
-                     # Check 3: Is it a positive value?
-                     if sampling_size_raw <= 0:
-                         logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingSize' is not positive ({sampling_size_raw})")
-                         continue
-                     if sampling_rate_raw <= 0:
-                         logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): 'samplingRate' is not positive ({sampling_rate_raw})")
-                         continue
-
-                     # Check 4: Is message data present?
-                     if message_data_raw is None or not isinstance(message_data_raw, (list, np.ndarray)):
-                          logging.warning(f"Skipping message (FrameIndex: {msg.get('frameIndex', 'N/A')}): Invalid or missing 'message' data")
-                          continue
-
-                     duration = sampling_size_raw / sampling_rate_raw
-                     msg_end_time_ts = msg_created_at_ts + duration
-
-                     # Check 5: Does it overlap with the selected time range?
-                     if msg_created_at_ts <= self.end_time and msg_end_time_ts >= self.start_time:
-                         # --- If ALL checks pass, add to filtered list ---
-                         # Store the validated values to avoid .get() later
-                         msg['_validated_samplingSize'] = sampling_size_raw
-                         msg['_validated_samplingRate'] = sampling_rate_raw
-                         filtered_messages.append(msg)
-                     # --- END CRITICAL VALIDATION ---
-                 except (ValueError, TypeError, KeyError) as e:
-                     logging.warning(f"Skipping message due to error parsing fields: {e}")
-                     continue
+                    # Check 5: Does created_at fall within the selected time range? (matching C#)
+                    if msg_created_at_ts >= self.start_time and msg_created_at_ts <= self.end_time:
+                        # --- If ALL checks pass, add to filtered list ---
+                        # Store the validated values to avoid .get() later
+                        msg['_validated_samplingSize'] = sampling_size_raw
+                        msg['_validated_samplingRate'] = sampling_rate_raw
+                        filtered_messages.append(msg)
+                    # --- END CRITICAL VALIDATION ---
+                except (ValueError, TypeError, KeyError) as e:
+                    logging.warning(f"Skipping message due to error parsing fields: {e}")
+                    continue
 
             if not filtered_messages:
                 error_msg = (f"No valid data messages found within the selected time range for filename {filename}. "
@@ -792,7 +784,7 @@ class TimeReportFeature:
 
             # Pre-allocate lists for channel data
             channel_data_buffers = [[] for _ in range(total_channels)]
-            all_timestamps_list = [] # List of arrays for timestamps from each message
+            time_buffer = []
 
             # Iterate through filtered messages and process data
             num_msgs = len(filtered_messages)
@@ -822,143 +814,94 @@ class TimeReportFeature:
                 # --- END CRITICAL VALIDATION ---
 
                 # --- Unflatten and Process ---
-                # 1. Main Channels (Interleaved)
-                main_data_start_idx = 0
-                # --- FIXED LINE: Now guaranteed safe for THIS message ---
-                main_data_end_idx = main_channels * validated_samples_per_channel_msg # <-- Use validated value
-                # --- END FIXED LINE ---
-                main_data_flat = flattened_data[main_data_start_idx:main_data_end_idx]
-
-                for ch in range(main_channels):
-                    # Extract interleaved data for channel `ch`
-                    ch_data = main_data_flat[ch::main_channels] # Every `main_channels`-th element starting at `ch`
+                # Contiguous blocks per channel (matches Time View)
+                for ch in range(total_channels):
+                    ch_start = ch * validated_samples_per_channel_msg
+                    ch_end = ch_start + validated_samples_per_channel_msg
+                    ch_data = flattened_data[ch_start:ch_end]
                     channel_data_buffers[ch].extend(ch_data)
 
-                # 2. Tacho Channels (Non-interleaved, after main)
-                tacho_data_start_idx = main_data_end_idx
-                for tch in range(tacho_channels):
-                    tch_start = tacho_data_start_idx + tch * validated_samples_per_channel_msg # <-- Use validated value
-                    tch_end = tch_start + validated_samples_per_channel_msg # <-- Use validated value
-                    tacho_data = flattened_data[tch_start:tch_end]
-                    channel_data_buffers[main_channels + tch].extend(tacho_data)
+                # Build per-sample timestamps for this message
+                base_time = msg_created_at_dt
+                time_step_msg = 1.0 / float(validated_sample_rate_msg)
+                time_buffer.extend([base_time.timestamp() + i * time_step_msg for i in range(validated_samples_per_channel_msg)])
 
-                # 3. Generate timestamps for this message block (using validated sample rate)
-                # np.arange is good for large arrays and precision
-                msg_times = msg_created_at_ts + np.arange(validated_samples_per_channel_msg) / validated_sample_rate_msg # <-- Use validated value
-                all_timestamps_list.append(msg_times)
-
-            # --- 6. Combine and Filter Data ---
-            progress.setLabelText("Combining and filtering data...")
+            # --- 6. Combine Data and Generate Time Axis (chronological) ---
+            progress.setLabelText("Combining data and generating time axis...")
             progress.setValue(80)
-            if not all_timestamps_list:
+            if not filtered_messages:
                  raise ValueError("No valid data found in selected messages after processing")
 
-            # Concatenate all data and times
-            combined_times = np.concatenate(all_timestamps_list)
+            # Concatenate all data
             combined_data = [np.array(buf) for buf in channel_data_buffers]
 
-            # Create a mask for the overall selected time range
-            combined_time_mask = (combined_times >= self.start_time) & (combined_times <= self.end_time)
-            if not np.any(combined_time_mask):
-                 raise ValueError("No data points found within the final combined time range")
+            # Build time axis from concatenated per-message timestamps
+            combined_times = np.array(time_buffer, dtype=np.float64)
 
-            # Apply mask
-            filtered_times = combined_times[combined_time_mask]
-            filtered_data = [d[combined_time_mask] for d in combined_data]
+            # Calculate total samples
+            total_samples = len(combined_times)
+            if total_samples == 0:
+                 raise ValueError("No data points found after concatenation")
+
+            # No need for further filtering since we use linear time and full data from selected messages
 
             # --- 7. Calibration and Downsampling ---
             progress.setLabelText("Applying calibration and downsampling...")
             progress.setValue(90)
 
             processed_data = []
-            total_points = len(filtered_times)
+            total_points = total_samples
             needs_downsampling = total_points > self.max_points_to_plot
             downsample_factor = int(np.ceil(total_points / self.max_points_to_plot)) if needs_downsampling else 1
 
             if needs_downsampling:
                 logging.debug(f"Downsampling data by factor of {downsample_factor} (from {total_points} to ~{total_points // downsample_factor} points)")
 
-            # Calibrate Main Channels (Aligning with C# logic)
+            # Calibrate Main Channels to mirror Time View (unit-aware)
             for ch in range(main_channels):
-                raw_data = filtered_data[ch] # This should be raw counts or volts
-                # If data is raw ushort (0-65535), convert to volts first:
-                # volts = raw_data * self.scaling_factor
-                # However, if the DB already provides volts or scaled values, use them directly.
-                # Assuming data from DB message is already in a form suitable for calibration (e.g., volts).
-                volts = raw_data
+                raw_counts = combined_data[ch]
+                # Convert ADC counts to volts (centered around 0V)
+                volts = counts_to_volts(raw_counts, self.scaling_factor, 32768.0)
 
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch + 1}"
                 props = self.channel_properties.get(channel_name, {
-                    "unit": "mil", "correctionValue": 1.0, "gain": 1.0, "ConvertedSensitivity": 1.0
+                    "unit": "mil", "correctionValue": 1.0, "gain": 1.0, "sensitivity": 1.0
                 })
 
                 try:
-                    # C# logic: baseValue = volts * Corr * Gain / Sensitivity -> Result is in mm.
-                    # Python: Use ConvertedSensitivity as per your DB structure.
-                    # The C# code uses props.Sensitivity directly. Your DB has ConvertedSensitivity.
-                    # Assuming ConvertedSensitivity is the correct value to use here (could be Sensitivity or adjusted).
-                    calibrated_data = volts * (props["correctionValue"] * props["gain"]) / props["ConvertedSensitivity"]
+                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
                 except (ZeroDivisionError, TypeError) as cal_error:
-                    logging.error(f"Calibration error for channel {channel_name}: {cal_error}. Using raw volts.")
-                    calibrated_data = volts # Fallback
-
-                # --- CORRECTED UNIT CONVERSION (Align with C#) ---
-                # C# logic inside switch(props.Unit.ToLower()):
-                # case "mil": calibratedData[j] = baseValue / 25.4; (mm to mil)
-                # case "um": calibratedData[j] = baseValue * 1000; (mm to um)
-                # case "mm": calibratedData[j] = baseValue; (already mm)
-                # This implies `baseValue` (our `calibrated_data` before unit conversion) is in mm.
-                unit = props["unit"]
-                if unit == "mil":
-                    calibrated_data = calibrated_data / 25.4 # mm to mil
-                elif unit == "um":
-                    calibrated_data = calibrated_data * 1000 # mm to um
-                # elif unit == "mm": pass # Already mm
-                # --- END CORRECTED UNIT CONVERSION ---
+                    logging.error(f"Calibration error for channel {channel_name}: {cal_error}. Using volts.")
+                    base_value = volts
+                unit = (props.get("unit", "mil") or "mil").lower()
+                calibrated_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
 
                 if needs_downsampling and len(calibrated_data) > 0:
                     calibrated_data = self.downsample_array(calibrated_data, downsample_factor)
                 processed_data.append(calibrated_data)
 
-            # Handle Tacho Channels (No calibration, potentially scaling if needed, but C# doesn't)
-            for ch in range(main_channels, total_channels):
-                 tacho_data = filtered_data[ch]
-                 # C# applies no scaling to tacho channels. They are raw.
-                 # Your previous code had `data = data * 10` for Frequency (ch == main_channels).
-                 # This is likely incorrect unless there's a specific reason.
-                 # Let's remove arbitrary scaling and match C#.
-                 processed_tacho_data = tacho_data # Raw tacho data
-                 if needs_downsampling and len(processed_tacho_data) > 0:
-                     processed_tacho_data = self.downsample_array(processed_tacho_data, downsample_factor)
-                 processed_data.append(processed_tacho_data)
+            # Handle Tacho Channels to mirror Time View scaling
+            for tch_idx, ch in enumerate(range(main_channels, total_channels)):
+                raw_counts = combined_data[ch]
+                volts = counts_to_volts(raw_counts, self.scaling_factor, 32768.0)
+                processed_tacho_data = tacho_scale(volts, tch_idx)
+
+                if needs_downsampling and len(processed_tacho_data) > 0:
+                    processed_tacho_data = self.downsample_array(processed_tacho_data, downsample_factor)
+                processed_data.append(processed_tacho_data)
 
             # Downsample times if needed
-            if needs_downsampling and len(filtered_times) > 0:
-                filtered_times = self.downsample_array(filtered_times, downsample_factor)
+            if needs_downsampling and len(combined_times) > 0:
+                combined_times = self.downsample_array(combined_times, downsample_factor)
 
             # --- 8. Plotting ---
             progress.setLabelText("Updating plots...")
             progress.setValue(95)
 
-            # Clear plots before adding new data
-            # Note: We clear the PlotDataItem, not the widget, and re-add data.
-            # Or we can just call setData. Let's use setData for clarity and efficiency.
-            # for widget in self.plot_widgets:
-            #     widget.clear() # This clears everything including axes, legend, items
-            #     # Re-add legend, grid, axes if needed (but they are usually persistent)
-            #     # widget.addLegend()
-            #     # widget.showGrid(x=True, y=True)
-            #     # axis = TimeAxisItem(orientation='bottom')
-            #     # widget.setAxisItems({'bottom': axis})
-            #     # Re-apply Y range for tacho if needed
-            #     y_axis_label = widget.getAxis('left').labelText
-            #     if "Frequency" in y_axis_label or "Trigger" in y_axis_label:
-            #          widget.setYRange(-0.5, 1.5, padding=0)
-
             # --- CRITICAL FIX: Ensure data and times are NumPy arrays ---
             # Assign processed data and times
             self.data = [np.asarray(d, dtype=np.float64) for d in processed_data] # Ensure float64
-            self.channel_times = np.asarray(filtered_times, dtype=np.float64) # Ensure float64
+            self.channel_times = np.asarray(combined_times, dtype=np.float64) # Ensure float64
 
             # --- CRITICAL FIX: Check for matching lengths before plotting ---
             if len(self.channel_times) == 0:

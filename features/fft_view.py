@@ -6,6 +6,7 @@ from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
 import numpy as np
 import logging
+from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 from scipy.fft import fft
 from scipy.signal import get_window
 from datetime import datetime
@@ -55,6 +56,13 @@ class FFTViewFeature:
         self.project_id = None
         self.settings = FFTSettings(None)
         self.data_buffer = []
+
+        # Calibration and channel metadata
+        self.scaling_factor = 3.3 / 65535.0
+        self.off_set = 32768.0
+        self.channel_properties = {}
+        self.channel_names = []
+        self._y_unit_label = None
 
         self.settings_panel = None
         self.settings_button = None
@@ -311,15 +319,41 @@ class FFTViewFeature:
             project_data = self.db.get_project_data(self.project_name)
             self.project_id = project_data.get("_id")
             self.settings = self.load_settings_from_database() or FFTSettings(self.project_id)
+            # Load channel properties so we can calibrate magnitudes per unit
+            self.load_channel_properties()
             self.update_settings_ui()
         except Exception as e:
             logging.error(f"Error initializing FFT settings: {str(e)}")
             if self.console:
                 self.console.append_to_console(f"Error initializing FFT settings: {str(e)}")
 
+    def load_channel_properties(self):
+        try:
+            project_data = self.db.get_project_data(self.project_name) if self.db else None
+            if not project_data:
+                return
+            for model in project_data.get("models", []):
+                if model.get("name") == self.model_name:
+                    self.channel_names = [ch.get("channelName") for ch in model.get("channels", [])]
+                    for ch in model.get("channels", []):
+                        name = ch.get("channelName")
+                        unit = (ch.get("unit", "mil") or "mil").lower()
+                        correction_value = float(ch.get("correctionValue", "1.0") or "1.0")
+                        gain = float(ch.get("gain", "1.0") or "1.0")
+                        sensitivity = float(ch.get("sensitivity", "1.0") or "1.0")
+                        self.channel_properties[name] = {
+                            "unit": unit,
+                            "correctionValue": correction_value,
+                            "gain": gain,
+                            "sensitivity": sensitivity,
+                        }
+                    break
+        except Exception as e:
+            logging.error(f"FFT: Error loading channel properties: {e}")
+
     def load_settings_from_database(self):
         try:
-            collection = self.mongo_client["sarayu"]["fft_settings"]
+            collection = self.mongo_client["changed_db"]["fft_settings"]
             settings_data = collection.find_one({"project_id": self.project_id})
             if settings_data:
                 self.settings = FFTSettings(self.project_id)
@@ -461,13 +495,36 @@ class FFTViewFeature:
                 # Per channel mode
                 channel_data = values
 
+            # Sample rate
             self.sample_rate = sample_rate if sample_rate > 0 else 1000
-            scaling_factor = 3.3 / 65535.0
-            raw_data = np.array(channel_data[:self.max_samples], dtype=np.float32)
-            self.latest_data = raw_data * scaling_factor
+            # Counts -> volts (center around 0V) using shared helper
+            raw_counts = np.array(channel_data[:self.max_samples], dtype=np.float64)
+            volts = counts_to_volts(raw_counts, self.scaling_factor, self.off_set)
+
+            # Determine channel props
+            ch_name = None
+            if self.channel_index is not None and 0 <= self.channel_index < len(self.channel_names):
+                ch_name = self.channel_names[self.channel_index]
+            props = self.channel_properties.get(ch_name or str(self.channel_index), {
+                "unit": "mil", "correctionValue": 1.0, "gain": 1.0, "sensitivity": 1.0
+            })
+            try:
+                base_value = calibrate(volts, props.get("correctionValue", 1.0), props.get("gain", 1.0), props.get("sensitivity", 1.0))
+            except Exception:
+                base_value = volts
+            unit = (props.get("unit", "mil") or "mil").lower()
+            calibrated = convert_unit(base_value, unit, "Displacement")
+
+            # Update buffers
+            self.latest_data = calibrated.astype(np.float64)
             self.data_buffer.append(self.latest_data.copy())
-            if len(self.data_buffer) > self.settings.number_of_averages:
-                self.data_buffer = self.data_buffer[-self.settings.number_of_averages:]
+            if len(self.data_buffer) > max(int(self.settings.number_of_averages), 1):
+                self.data_buffer = self.data_buffer[-int(self.settings.number_of_averages):]
+
+            # Update axis label once
+            if self._y_unit_label != unit:
+                self._y_unit_label = unit
+                self.magnitude_plot_widget.setLabel('left', f'Amplitude ({unit})', color='#000000')
 
             if self.is_saving and self.current_filename:
                 self.save_data_to_database(tag_name, values, sample_rate, frame_index)
@@ -490,8 +547,20 @@ class FFTViewFeature:
                 self.log_and_set_status(f"Insufficient data length: {n}")
                 return
 
-            window_name = self.settings.window_type.lower() if self.settings.window_type != "None" else "rectangular"
-            window = get_window(window_name, n)
+            # Map UI window names to scipy.signal.get_window names
+            if self.settings.window_type == "None":
+                window = np.ones(n)
+                window_name = "rectangular"
+            else:
+                ui_name = self.settings.window_type.lower()
+                if ui_name == "hanning":
+                    mapped = "hann"
+                elif ui_name == "flat-top":
+                    mapped = "flattop"
+                else:
+                    mapped = ui_name
+                window = get_window(mapped, n)
+                window_name = mapped
             windowed_data = data * window
 
             target_length = 2 ** int(np.ceil(np.log2(n)))
@@ -504,7 +573,13 @@ class FFTViewFeature:
             freq_mask = (frequencies >= self.settings.start_frequency) & (frequencies <= self.settings.stop_frequency)
 
             filtered_frequencies = frequencies[freq_mask]
-            magnitudes = np.abs(fft_result[:half]) / target_length
+            # Single-sided amplitude spectrum with coherent gain compensation
+            # Coherent gain (CG) = mean(window)
+            cg = np.mean(window)
+            magnitudes = np.abs(fft_result[:half]) / (target_length * max(cg, 1e-12))
+            # Double all bins except DC (and Nyquist bin if it were included)
+            if half > 1:
+                magnitudes[1:] *= 2.0
             phases = np.degrees(np.angle(fft_result[:half]))
             filtered_magnitudes = magnitudes[freq_mask]
             filtered_phases = phases[freq_mask]
@@ -520,8 +595,24 @@ class FFTViewFeature:
                 filtered_magnitudes *= weights
 
             if self.settings.averaging_mode == "Linear" and len(self.data_buffer) > 1:
-                avg_magnitudes = np.mean([np.abs(fft(np.pad(d * window, (0, target_length - len(d)))))[:half] / target_length for d in self.data_buffer], axis=0)
-                avg_phases = np.mean([np.degrees(np.angle(fft(np.pad(d * window, (0, target_length - len(d)))))[:half]) for d in self.data_buffer], axis=0)
+                avg_magnitudes = []
+                avg_phases = []
+                for d in self.data_buffer:
+                    d_len = len(d)
+                    w = window if len(window) == d_len else get_window(window_name, d_len) if window_name != "rectangular" else np.ones(d_len)
+                    pd_len = 2 ** int(np.ceil(np.log2(d_len)))
+                    d_pad = np.pad(d * w, (0, pd_len - d_len))
+                    F = fft(d_pad)
+                    h = pd_len // 2
+                    cg_d = np.mean(w)
+                    mags = np.abs(F[:h]) / (pd_len * max(cg_d, 1e-12))
+                    if h > 1:
+                        mags[1:] *= 2.0
+                    phs = np.degrees(np.angle(F[:h]))
+                    avg_magnitudes.append(mags)
+                    avg_phases.append(phs)
+                avg_magnitudes = np.mean(np.stack(avg_magnitudes, axis=0), axis=0)
+                avg_phases = np.mean(np.stack(avg_phases, axis=0), axis=0)
                 filtered_magnitudes = avg_magnitudes[freq_mask]
                 filtered_phases = avg_phases[freq_mask]
             elif self.settings.averaging_mode == "Exponential" and len(self.data_buffer) > 1:
@@ -529,9 +620,16 @@ class FFTViewFeature:
                 avg_magnitudes = np.zeros(half)
                 avg_phases = np.zeros(half)
                 for d in self.data_buffer:
-                    fft_d = fft(np.pad(d * window, (0, target_length - len(d))))
-                    avg_magnitudes = alpha * (np.abs(fft_d[:half]) / target_length) + (1 - alpha) * avg_magnitudes
-                    avg_phases = alpha * np.degrees(np.angle(fft_d[:half])) + (1 - alpha) * avg_phases
+                    d_len = len(d)
+                    w = window if len(window) == d_len else get_window(window_name, d_len) if window_name != "rectangular" else np.ones(d_len)
+                    d_pad = np.pad(d * w, (0, target_length - d_len))
+                    Fd = fft(d_pad)
+                    mags = np.abs(Fd[:half]) / (target_length * max(np.mean(w), 1e-12))
+                    if half > 1:
+                        mags[1:] *= 2.0
+                    phs = np.degrees(np.angle(Fd[:half]))
+                    avg_magnitudes = alpha * mags + (1 - alpha) * avg_magnitudes
+                    avg_phases = alpha * phs + (1 - alpha) * avg_phases
                 filtered_magnitudes = avg_magnitudes[freq_mask]
                 filtered_phases = avg_phases[freq_mask]
 
@@ -602,15 +700,40 @@ class FFTViewFeature:
                     self.log_and_set_status("FFT: Invalid nested data shape in selection payload.")
                     return
 
-            # Default to first main channel if none selected
-            self.channel_index = self.channel_index if self.channel_index is not None else 0
-            if self.channel_index >= num_main:
-                self.channel_index = 0
+            # Choose channel index
+            ch_idx = self.channel_index if self.channel_index is not None else 0
+            if ch_idx >= len(values):
+                self.log_and_set_status(f"FFT: Selected channel index {ch_idx} out of range for {len(values)} channels.")
+                return
 
+            # Counts -> volts
+            raw = np.array(values[ch_idx][:self.max_samples], dtype=np.float64)
+            volts = (raw - self.off_set) * self.scaling_factor
+            # Calibrate & unit convert
+            name_sf = self.channel_names[ch_idx] if 0 <= ch_idx < len(self.channel_names) else None
+            props_sf = self.channel_properties.get(name_sf or str(ch_idx), {
+                "unit": "mil", "correctionValue": 1.0, "gain": 1.0, "sensitivity": 1.0
+            })
+            try:
+                base_value_sf = volts * (props_sf.get("correctionValue", 1.0) * props_sf.get("gain", 1.0)) / max(props_sf.get("sensitivity", 1.0), 1e-12)
+            except Exception:
+                base_value_sf = volts
+            unit_sf = (props_sf.get("unit", "mil") or "mil").lower()
+            if unit_sf == "mil":
+                calibrated_sf = base_value_sf / 25.4
+            elif unit_sf == "um":
+                calibrated_sf = base_value_sf
+            elif unit_sf == "mm":
+                calibrated_sf = base_value_sf / 1000.0
+            else:
+                calibrated_sf = base_value_sf
+            if self._y_unit_label != unit_sf:
+                self._y_unit_label = unit_sf
+                self.magnitude_plot_widget.setLabel('left', f'Amplitude ({unit_sf})', color='#000000')
+
+            # Buffer and plot
             self.sample_rate = Fs
-            scaling_factor = 3.3 / 65535.0
-            raw = np.array(values[self.channel_index][:self.max_samples], dtype=np.float32)
-            self.latest_data = raw * scaling_factor
+            self.latest_data = calibrated_sf.astype(np.float64)
             self.data_buffer = [self.latest_data.copy()]
             self.update_plot()
             if self.console:

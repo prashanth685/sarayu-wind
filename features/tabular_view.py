@@ -6,6 +6,7 @@ import pyqtgraph as pg
 from datetime import datetime
 import scipy.signal as signal
 import logging
+from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -135,6 +136,9 @@ class TabularViewFeature:
         self.data_buffer = []  # Buffer for incoming data
         self.last_update_time = datetime.now()
         self.update_interval = 0.5  # Update every 0.5 seconds
+        # Calibration constants to match Time View
+        self.scaling_factor = 3.3 / 65535.0
+        self.off_set = 32768
         self.initUI()
         self.initialize_thread()
 
@@ -520,14 +524,12 @@ class TabularViewFeature:
             "Unit": "mil"
         })
         try:
-            channel_data = np.array(values, dtype=float) * (3.3 / 65535.0) * (props["CorrectionValue"] * props["Gain"]) / props["Sensitivity"]
-            unit = props["Unit"].lower()
-            if unit == "mm":
-                channel_data /= 25.4  # Convert from mil to mm
-            elif unit == "um":
-                channel_data *= 25.4 * 1000  # Convert from mil to um
-            logging.debug(f"Processed data for {channel_name} with unit {unit}, shape: {channel_data.shape}")
-            return channel_data
+            volts = counts_to_volts(values, self.scaling_factor, self.off_set)
+            base_value = calibrate(volts, props["CorrectionValue"], props["Gain"], props["Sensitivity"])
+            unit = (props.get("Unit", "mil") or "mil").lower()
+            calibrated = convert_unit(base_value, unit, "Displacement")
+            logging.debug(f"Processed data for {channel_name} with unit {unit}, shape: {calibrated.shape}")
+            return calibrated
         except Exception as ex:
             self.log_and_set_status(f"Error processing calibrated data for {channel_name}: {str(ex)}")
             return np.zeros(4096)
@@ -535,16 +537,15 @@ class TabularViewFeature:
     def format_direct_value(self, values, unit):
         if not values or len(values) == 0:
             return "0.00"
-        avg = np.mean(values)
-        unit = unit.lower()
-        if unit == "mil":
-            return f"{avg:.2f}"
+        # Values are already calibrated to the selected unit; only format
+        avg = float(np.mean(values))
+        unit = (unit or "mil").lower()
+        if unit == "mm":
+            return f"{avg:.6f}"
         elif unit == "um":
-            return f"{avg * 25.4 * 1000:.0f}"  # Convert mil to um
-        elif unit == "mm":
-            return f"{avg / 25.4:.3f}"  # Convert mil to mm
-        logging.debug(f"Formatted direct value: {avg} in unit {unit}")
-        return f"{avg:.2f}"
+            return f"{avg:.2f}"
+        else:  # mil or others
+            return f"{avg:.2f}"
 
     def on_data_received(self, tag_name, model_name, values, sample_rate, frame_index):
         if not values or len(values) < 1:

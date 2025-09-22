@@ -79,8 +79,9 @@ class CreateProjectWidget(QWidget):
         self.available_types = ["Displacement", "Acc/Vel"]
         self.available_directions = ["Right", "Left"]
         self.available_channel_counts = ["DAQ4CH", "DAQ8CH", "DAQ10CH"]
-        self.available_units_displacement = ["mil", "mm", "um"]
+        self.available_units_displacement = ["mil", "mm", "um","v"]
         self.available_units_accvel = ["g", "m/s²", "mm/s"]
+        self.available_unit_types = ["Displacement", "Volts"]
         self.initUI()
         logging.debug(f"Initialized CreateProjectWidget in {'edit' if edit_mode else 'create'} mode for project: {existing_project_name}")
 
@@ -354,7 +355,16 @@ class CreateProjectWidget(QWidget):
                 
                 table.setItem(row, 5, QTableWidgetItem(""))
                 table.setItem(row, 6, QTableWidgetItem(""))
-                table.setItem(row, 7, QTableWidgetItem(""))
+                unit_type_combo = QComboBox()
+                unit_type_combo.addItems(self.available_unit_types)
+                # Default to 'Displacement' unless unit is 'v'
+                try:
+                    current_unit_widget = table.cellWidget(row, 4)
+                    current_unit_text = current_unit_widget.currentText().lower() if current_unit_widget else "mil"
+                except Exception:
+                    current_unit_text = "mil"
+                unit_type_combo.setCurrentText("Volts" if current_unit_text == "v" else "Displacement")
+                table.setCellWidget(row, 7, unit_type_combo)
                 table.setItem(row, 8, QTableWidgetItem(""))
                 
                 direction_combo = QComboBox()
@@ -555,7 +565,13 @@ class CreateProjectWidget(QWidget):
                 
                 table.setItem(row, 5, QTableWidgetItem(channel.get("correctionValue", "")))
                 table.setItem(row, 6, QTableWidgetItem(channel.get("gain", "")))
-                table.setItem(row, 7, QTableWidgetItem(channel.get("unitType", "")))
+                unit_type_combo = QComboBox()
+                unit_type_combo.addItems(self.available_unit_types)
+                # Prefer existing channel unitType, else infer from unit
+                existing_unit_type = channel.get("unitType")
+                inferred_unit_type = "Volts" if str(channel.get("unit", "")).lower() == "v" else "Displacement"
+                unit_type_combo.setCurrentText(existing_unit_type if existing_unit_type in self.available_unit_types else inferred_unit_type)
+                table.setCellWidget(row, 7, unit_type_combo)
                 table.setItem(row, 8, QTableWidgetItem(channel.get("angle", "")))
                 
                 direction_combo = QComboBox()
@@ -624,7 +640,10 @@ class CreateProjectWidget(QWidget):
         
         table.setItem(current_rows, 5, QTableWidgetItem(""))
         table.setItem(current_rows, 6, QTableWidgetItem(""))
-        table.setItem(current_rows, 7, QTableWidgetItem(""))
+        unit_type_combo = QComboBox()
+        unit_type_combo.addItems(self.available_unit_types)
+        unit_type_combo.setCurrentText("Displacement")
+        table.setCellWidget(current_rows, 7, unit_type_combo)
         table.setItem(current_rows, 8, QTableWidgetItem(""))
         
         direction_combo = QComboBox()
@@ -681,7 +700,7 @@ class CreateProjectWidget(QWidget):
                         "unit": table.cellWidget(row, 4).currentText() if table.cellWidget(row, 4) else "mil",
                         "correctionValue": table.item(row, 5).text().strip() if table.item(row, 5) else "",
                         "gain": table.item(row, 6).text().strip() if table.item(row, 6) else "",
-                        "unitType": table.item(row, 7).text().strip() if table.item(row, 7) else "",
+                        "unitType": (table.cellWidget(row, 7).currentText().strip() if table.cellWidget(row, 7) else (table.item(row, 7).text().strip() if table.item(row, 7) else "")),
                         "angle": table.item(row, 8).text().strip() if table.item(row, 8) else "",
                         "angleDirection": table.cellWidget(row, 9).currentText() if table.cellWidget(row, 9) else "Right",
                         "shaft": table.item(row, 10).text().strip() if table.item(row, 10) else ""
