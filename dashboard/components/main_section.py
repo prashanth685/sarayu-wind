@@ -29,8 +29,8 @@ class MainSection(QWidget):
         """)
         self.mdi_area = QMdiArea()
         self.mdi_area.setStyleSheet("""
-            QMdiArea { background-color: #d1d6d9; border: none; }
-            QMdiSubWindow { background-color: #d1d6d9; border: 1px solid #d1d6d9; border-radius: 4px; }
+            QMdiArea { background-color: #ebeef2; border: none; }
+            QMdiSubWindow { background-color: #ebeef2; border: 1px solid #ebeef2; border-radius: 4px; }
             QMdiSubWindow::title { height: 40px; }
         """)
         self.mdi_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)

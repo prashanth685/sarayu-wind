@@ -6,7 +6,6 @@ import pyqtgraph as pg
 from datetime import datetime
 import scipy.signal as signal
 import logging
-from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -524,10 +523,12 @@ class TabularViewFeature:
             "Unit": "mil"
         })
         try:
-            volts = counts_to_volts(values, self.scaling_factor, self.off_set)
-            base_value = calibrate(volts, props["CorrectionValue"], props["Gain"], props["Sensitivity"])
+            volts = (np.array(values, dtype=float) - self.off_set) * self.scaling_factor
             unit = (props.get("Unit", "mil") or "mil").lower()
-            calibrated = convert_unit(base_value, unit, "Displacement")
+            if unit == "v":
+                calibrated = volts
+            else:
+                calibrated = volts * (props["CorrectionValue"] * props["Gain"]) * props["Sensitivity"]
             logging.debug(f"Processed data for {channel_name} with unit {unit}, shape: {calibrated.shape}")
             return calibrated
         except Exception as ex:

@@ -26,19 +26,23 @@ class WaterfallFeature:
             if self.console:
                 self.console.append_to_console(f"Invalid channel_count {channel_count}: {str(e)}. Using {self.channel_count} from database.")
             logging.error(f"Invalid channel_count {channel_count}: {str(e)}. Using {self.channel_count} from database.")
+        # Tacho channels: try to read from DB; fallback to 2
+        self.tacho_channels_count = self.get_tacho_count_from_db(default=2)
+        self.main_channels = max(0, self.channel_count - self.tacho_channels_count)
         self.max_lines = 1
-        self.data_history = [[] for _ in range(self.channel_count)]
-        self.phase_history = [[] for _ in range(self.channel_count)]
+        self.data_history = [[] for _ in range(self.main_channels if self.main_channels > 0 else self.channel_count)]
+        self.phase_history = [[] for _ in range(self.main_channels if self.main_channels > 0 else self.channel_count)]
         self.scaling_factor = 3.3 / 65535.0
         self.sample_rate = 4096
         self.samples_per_channel = 4096
         self.last_frame_index = -1
         self.frequency_range = (0, 2000)
+        # Load channel names from DB for the opened project/model
         self.channel_names = self.get_channel_names()
         self.initUI()
         if self.console:
             self.console.append_to_console(
-                f"Initialized WaterfallFeature for {self.model_name or 'No Model'} with {self.channel_count} channels: {self.channel_names}"
+                f"Initialized WaterfallFeature for {self.model_name or 'No Model'} with {self.channel_count} channels (main={self.main_channels}): {self.channel_names}"
             )
 
     def get_channel_count_from_db(self):
@@ -76,11 +80,30 @@ class WaterfallFeature:
             logging.error(f"Error retrieving channel names: {str(e)}")
             return [f"Channel_{i+1}" for i in range(self.channel_count)]
 
+    def get_tacho_count_from_db(self, default=2):
+        try:
+            project_data = self.db.get_project_data(self.project_name) if self.db else {}
+            model = next((m for m in project_data.get("models", []) if m["name"] == self.model_name), None)
+            if model:
+                # Common field name used elsewhere: 'tacoChannelCount'
+                val = model.get("tacoChannelCount")
+                if isinstance(val, int) and val >= 0:
+                    return val
+                # Alternate spellings just in case
+                for key in ["tachoChannelCount", "tachChannelCount", "tachometerChannels"]:
+                    v = model.get(key)
+                    if isinstance(v, int) and v >= 0:
+                        return v
+        except Exception:
+            pass
+        return default
+
     def initUI(self):
         self.widget = QWidget()
         layout = QVBoxLayout()
         self.widget.setLayout(layout)
-        self.figure = Figure(figsize=(8, 6))
+        # Enable constrained layout to better accommodate axis decorations
+        self.figure = Figure(figsize=(8, 6), constrained_layout=True)
         self.canvas = FigureCanvas(self.figure)
         self.ax = self.figure.add_subplot(111, projection='3d')
         layout.addWidget(self.canvas)
@@ -127,10 +150,17 @@ class WaterfallFeature:
                             f"WaterfallFeature: Adjusting channel count from {self.channel_count} to {total_channels} based on payload, frame {frame_index}"
                         )
                     self.channel_count = total_channels
-                    self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
-                    self.data_history = [[] for _ in range(self.channel_count)]
-                    self.phase_history = [[] for _ in range(self.channel_count)]
-                channel_data = values
+                    self.main_channels = max(0, self.channel_count - self.tacho_channels_count)
+                    # Refresh names from DB to reflect the current project/model
+                    try:
+                        self.channel_names = self.get_channel_names()
+                    except Exception:
+                        # Fallback safe labels if DB not available temporarily
+                        self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
+                    self.data_history = [[] for _ in range(self.main_channels)]
+                    self.phase_history = [[] for _ in range(self.main_channels)]
+                # Use only main channels (exclude last tacho channels)
+                channel_data = values[:self.main_channels] if self.main_channels > 0 else values
             else:
                 # Per channel mode - not expected for waterfall (requires all channels)
                 if self.console:
@@ -148,24 +178,28 @@ class WaterfallFeature:
             frequencies = np.fft.fftfreq(target_length, 1.0 / self.sample_rate)[:target_length // 2]
             freq_mask = (frequencies >= self.frequency_range[0]) & (frequencies <= self.frequency_range[1])
             filtered_frequencies = frequencies[freq_mask]
+
             if len(filtered_frequencies) == 0:
                 if self.console:
                     self.console.append_to_console(f"Error: No valid frequencies in range {self.frequency_range}, frame {frame_index}")
                 return
-            for ch_idx in range(self.channel_count):
+            # Iterate only over main channels
+            active_channels = self.main_channels if self.main_channels > 0 else len(channel_data)
+            for ch_idx in range(active_channels):
                 if len(channel_data[ch_idx]) != self.samples_per_channel:
                     if self.console:
                         self.console.append_to_console(
-                            f"Invalid data length for channel {self.channel_names[ch_idx]}: got {len(channel_data[ch_idx])}, expected {self.samples_per_channel}, frame {frame_index}"
+                            f"Invalid data length for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}: got {len(channel_data[ch_idx])}, expected {self.samples_per_channel}, frame {frame_index}"
                         )
                     continue
                 data = np.array(channel_data[ch_idx], dtype=np.float32) * self.scaling_factor
                 if not np.any(data):
                     if self.console:
                         self.console.append_to_console(
-                            f"Warning: Zero data for channel {self.channel_names[ch_idx]}, frame {frame_index}"
+                            f"Warning: Zero data for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}, frame {frame_index}"
                         )
                     continue
+
                 padded_data = np.pad(data, (0, target_length - sample_count), mode='constant') if target_length > sample_count else data
                 fft_result = np.fft.fft(padded_data)
                 half = target_length // 2
@@ -186,9 +220,13 @@ class WaterfallFeature:
                 if len(filtered_magnitudes) == 0 or len(filtered_frequencies_subset) == 0:
                     if self.console:
                         self.console.append_to_console(
-                            f"Error: Empty FFT data for channel {self.channel_names[ch_idx]}, frame {frame_index}"
+                            f"Error: Empty FFT data for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}, frame {frame_index}"
                         )
                     continue
+                # Ensure history buffers sized to active channels
+                while len(self.data_history) < active_channels:
+                    self.data_history.append([])
+                    self.phase_history.append([])
                 self.data_history[ch_idx].append(filtered_magnitudes)
                 self.phase_history[ch_idx].append(filtered_phases)
                 if len(self.data_history[ch_idx]) > self.max_lines:
@@ -198,7 +236,7 @@ class WaterfallFeature:
                 fft_phases.append(filtered_phases)
                 if self.console:
                     self.console.append_to_console(
-                        f"WaterfallFeature: Processed FFT for channel {self.channel_names[ch_idx]}, "
+                        f"WaterfallFeature: Processed FFT for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}, "
                         f"samples={len(data)}, Fs={self.sample_rate}Hz, FFT points={len(filtered_magnitudes)}, frame {frame_index}"
                     )
             if fft_magnitudes:
@@ -206,6 +244,7 @@ class WaterfallFeature:
             else:
                 if self.console:
                     self.console.append_to_console(f"No valid FFT data to plot, frame {frame_index}")
+
         except Exception as e:
             if self.console:
                 self.console.append_to_console(f"WaterfallFeature: Error processing data, frame {frame_index}: {str(e)}")
@@ -214,7 +253,8 @@ class WaterfallFeature:
     def update_waterfall_plot(self, frequencies):
         try:
             self.ax.clear()
-            self.ax.set_title(f"Waterfall FFT Plot (Model: {self.model_name}, {self.channel_count} Channels)")
+            display_channels = self.main_channels if self.main_channels > 0 else self.channel_count
+            self.ax.set_title(f"Waterfall FFT Plot (Model: {self.model_name}, {display_channels} Main Channels)")
             self.ax.set_xlabel("Frequency (Hz)")
             self.ax.set_ylabel("Channel")
             self.ax.set_zlabel("Amplitude (V)")
@@ -222,27 +262,39 @@ class WaterfallFeature:
             colors = ['blue', 'red', 'green', 'purple', 'orange', 'cyan', 'magenta', 'yellow', 'black', 'brown']
             max_amplitude = 0
             plotted = False
-            for ch_idx in range(self.channel_count):
+            active_channels = self.main_channels if self.main_channels > 0 else len(self.data_history)
+            ytick_positions = []
+            ytick_labels = []
+            # Determine labels for main channels from DB names
+            labels_source = self.channel_names[:active_channels] if self.channel_names else [f"Channel_{i+1}" for i in range(active_channels)]
+            for ch_idx in range(active_channels):
                 if not self.data_history[ch_idx]:
                     if self.console:
-                        self.console.append_to_console(f"No data to plot for channel {self.channel_names[ch_idx]}")
+                        self.console.append_to_console(f"No data to plot for channel {labels_source[ch_idx]}")
                     continue
                 num_lines = len(self.data_history[ch_idx])
                 for idx, fft_line in enumerate(self.data_history[ch_idx]):
                     if len(fft_line) == 0:
                         if self.console:
-                            self.console.append_to_console(f"Empty FFT data for channel {self.channel_names[ch_idx]}, line {idx}")
+                            self.console.append_to_console(f"Empty FFT data for channel {labels_source[ch_idx]}, line {idx}")
                         continue
                     x = frequencies if frequencies is not None and len(frequencies) == len(fft_line) else np.arange(len(fft_line))
-                    y = np.full_like(x, ch_idx * (self.max_lines + 2))
+                    base_y = ch_idx * (self.max_lines + 2)
+                    y = np.full_like(x, base_y)
                     z = fft_line
                     self.ax.plot(x, y, z, color=colors[ch_idx % len(colors)])
                     max_amplitude = max(max_amplitude, np.max(z) if len(z) > 0 else 0)
                     plotted = True
-                    if self.console:
-                        self.console.append_to_console(
-                            f"Plotted channel {self.channel_names[ch_idx]}, FFT points={len(fft_line)}, max amplitude={np.max(z):.4f}"
-                        )
+                # Collect one tick per channel at its baseline
+                ytick_positions.append(base_y)
+                label = labels_source[ch_idx]
+                ytick_labels.append(label)
+            # Apply custom Y ticks with channel names (remove numbers)
+            try:
+                self.ax.set_yticks(ytick_positions)
+                self.ax.set_yticklabels(ytick_labels)
+            except Exception:
+                pass
             if not plotted:
                 if self.console:
                     self.console.append_to_console("No valid data plotted, drawing empty plot")
@@ -250,16 +302,18 @@ class WaterfallFeature:
                 y = np.array([0, 0])
                 z = np.array([0, 0])
                 self.ax.plot(x, y, z, color='gray', label='No Data')
-            self.ax.set_ylim(-1, self.channel_count * (self.max_lines + 2))
+            self.ax.set_ylim(-1, active_channels * (self.max_lines + 2))
             self.ax.set_xlim(self.frequency_range[0], self.frequency_range[1] if frequencies is not None else 1000)
             self.ax.set_zlim(0, max_amplitude * 1.1 if max_amplitude > 0 else 1.0)
             # self.ax.legend(loc='upper right')
             self.ax.view_init(elev=20, azim=-45)
-            self.figure.tight_layout()
+            # With constrained_layout=True, tight_layout is not needed
+
             self.canvas.draw_idle()
             self.canvas.flush_events()
             if self.console:
                 self.console.append_to_console(f"WaterfallFeature: Updated plot for {self.channel_count} channels, plotted={plotted}")
+
         except Exception as e:
             if self.console:
                 self.console.append_to_console(f"WaterfallFeature: Error updating plot: {str(e)}")
@@ -274,6 +328,7 @@ class WaterfallFeature:
             num_main = int(payload.get("numberOfChannels", 0))
             num_tacho = int(payload.get("tacoChannelCount", 0))
             total_ch = num_main + num_tacho
+
             Fs = float(payload.get("samplingRate", 0) or 0)
             N = int(payload.get("samplingSize", 0) or 0)
             data_flat = payload.get("message", [])
@@ -302,13 +357,21 @@ class WaterfallFeature:
                     return
 
             # Update channel count dynamically if mismatched
-            if num_main != self.channel_count:
+            if num_main + num_tacho != self.channel_count:
                 if self.console:
-                    self.console.append_to_console(f"Waterfall: Adjusting channel count from {self.channel_count} to {num_main} based on payload.")
-                self.channel_count = num_main
+                    self.console.append_to_console(f"Waterfall: Adjusting channel count from {self.channel_count} to {total_ch} based on payload.")
+                self.channel_count = total_ch
+            # Always compute main channels from payload fields
+            self.tacho_channels_count = num_tacho
+            self.main_channels = max(0, num_main)
+            # Refresh DB channel names for current model
+            try:
+                self.channel_names = self.get_channel_names()
+            except Exception:
                 self.channel_names = [f"Channel_{i+1}" for i in range(self.channel_count)]
-                self.data_history = [[] for _ in range(self.channel_count)]
-                self.phase_history = [[] for _ in range(self.channel_count)]
+            # Ensure buffers sized to main channels
+            self.data_history = [[] for _ in range(self.main_channels if self.main_channels > 0 else num_main)]
+            self.phase_history = [[] for _ in range(self.main_channels if self.main_channels > 0 else num_main)]
 
             self.sample_rate = Fs
             self.samples_per_channel = N
@@ -323,16 +386,17 @@ class WaterfallFeature:
                 if self.console:
                     self.console.append_to_console(f"Waterfall: Error: No valid frequencies in range {self.frequency_range}")
                 return
-            for ch_idx in range(self.channel_count):
+            for ch_idx in range(self.main_channels):
                 data = np.array(values[ch_idx], dtype=np.float32) * self.scaling_factor
                 if not np.any(data):
                     if self.console:
-                        self.console.append_to_console(f"Waterfall: Warning: Zero data for channel {self.channel_names[ch_idx]}")
+                        self.console.append_to_console(f"Waterfall: Warning: Zero data for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}")
                     continue
                 padded_data = np.pad(data, (0, target_length - sample_count), mode='constant') if target_length > sample_count else data
                 fft_result = np.fft.fft(padded_data)
                 half = target_length // 2
                 magnitudes = (2.0 / target_length) * np.abs(fft_result[:half])
+
                 magnitudes[0] /= 2
                 if target_length % 2 == 0:
                     magnitudes[-1] /= 2
@@ -348,24 +412,25 @@ class WaterfallFeature:
                     filtered_frequencies_subset = filtered_frequencies
                 if len(filtered_magnitudes) == 0 or len(filtered_frequencies_subset) == 0:
                     if self.console:
-                        self.console.append_to_console(f"Waterfall: Error: Empty FFT data for channel {self.channel_names[ch_idx]}")
+                        self.console.append_to_console(f"Waterfall: Error: Empty FFT data for channel {self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else ch_idx}")
                     continue
                 self.data_history[ch_idx] = [filtered_magnitudes]
                 self.phase_history[ch_idx] = [filtered_phases]
                 fft_magnitudes.append(filtered_magnitudes)
                 fft_phases.append(filtered_phases)
                 if self.console:
+                    label = self.channel_names[ch_idx] if ch_idx < len(self.channel_names) else f"Channel_{ch_idx+1}"
                     self.console.append_to_console(
-                        f"Waterfall: Processed FFT for channel {self.channel_names[ch_idx]}, "
-                        f"samples={len(data)}, Fs={self.sample_rate}Hz, FFT points={len(filtered_magnitudes)}"
+                        f"Waterfall: Processed FFT for channel {label}, samples={len(data)}, Fs={self.sample_rate}Hz, FFT points={len(filtered_magnitudes)}"
                     )
             if fft_magnitudes:
                 self.update_waterfall_plot(filtered_frequencies_subset if fft_magnitudes else None)
                 if self.console:
-                    self.console.append_to_console(f"Waterfall: Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz) for {self.channel_count} channels")
+                    self.console.append_to_console(f"Waterfall: Loaded selected frame {payload.get('frameIndex')} ({N} samples @ {Fs}Hz) for {self.main_channels} main channels")
             else:
                 if self.console:
                     self.console.append_to_console("Waterfall: No valid FFT data to plot from selected frame")
+
         except Exception as e:
             if self.console:
                 self.console.append_to_console(f"Waterfall: Error loading selected frame: {str(e)}")

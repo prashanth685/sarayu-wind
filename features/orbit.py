@@ -7,6 +7,23 @@ import numpy as np
 import logging
 from datetime import datetime
 
+class TimeAxisItem(pg.AxisItem):
+    """Custom axis to display hh:mm:ss on the x-axis using epoch seconds input."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def tickStrings(self, values, scale, spacing):
+        labels = []
+        for v in values:
+            try:
+                if isinstance(v, (int, float)) and v > 0:
+                    labels.append(datetime.fromtimestamp(v).strftime('%H:%M:%S'))
+                else:
+                    labels.append("")
+            except Exception:
+                labels.append("")
+        return labels
+
 class OrbitFeature(QObject):
     primary_channel_changed = pyqtSignal(int)
     secondary_channel_changed = pyqtSignal(int)
@@ -300,11 +317,14 @@ class OrbitFeature(QObject):
                 # Responsive time-domain plot sizing
                 time_plot_widget.setMinimumSize(300, 160)
                 time_plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                # Use time-formatted x-axis (hh:mm:ss)
+                axis = TimeAxisItem(orientation='bottom')
+                time_plot_widget.setAxisItems({'bottom': axis})
                 # Add each time-domain plot to the vertical container to show one by one
                 time_plots_vlayout.addWidget(time_plot_widget)
                 time_plot_item = time_plot_widget.getPlotItem()
                 time_plot_item.setTitle(f"Channel {self.available_channels[ch]} Time Domain")
-                time_plot_item.setLabel('bottom', "Time (s)")
+                time_plot_item.setLabel('bottom', "Time")
                 time_plot_item.setLabel('left', f"Channel {self.available_channels[ch]} Value")
                 time_plot_item.showGrid(x=True, y=True)
                 time_plot_item.setXRange(self.current_time - self.window_seconds, self.current_time, padding=0.02)

@@ -1,12 +1,11 @@
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QScrollArea, QPushButton, QComboBox, QGridLayout
 from PyQt5.QtCore import QObject, QEvent, Qt, QTimer
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QFont
 from pyqtgraph import PlotWidget, mkPen, AxisItem, SignalProxy, InfiniteLine
 from datetime import datetime, timedelta
 import time
 import logging
-from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -15,7 +14,46 @@ class TimeAxisItem(AxisItem):
         super().__init__(*args, **kwargs)
 
     def tickStrings(self, values, scale, spacing):
-        return [datetime.fromtimestamp(v).strftime('%Y-%m-%d\n%H:%M:%S') for v in values]
+        # Render ticks as two lines: MMDDYYYY on first, HH:MM::SS:CC on second (CC = centiseconds)
+        labels = []
+        for v in values:
+            try:
+                if isinstance(v, (int, float)) and v > 0:
+                    dt = datetime.fromtimestamp(v)
+                    centi = int(round(dt.microsecond / 10000.0))
+                    # Date as MMDDYYYY without separators
+                    date_str = dt.strftime('%m-%d-%Y')
+                    # Time as HH:MM::SS:CC (with double colon before seconds)
+                    hhmm = dt.strftime('%H:%M')
+                    ss = dt.strftime('%S')
+                    time_str = f"{hhmm}:{ss}:{centi:02d}"
+                    labels.append(f"{date_str}\n{time_str}")
+                else:
+                    labels.append("")
+            except Exception:
+                labels.append("")
+        return labels
+
+class LeftAxisItem(AxisItem):
+    def __init__(self, *args, decimals=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.decimals = decimals
+
+    def tickStrings(self, values, scale, spacing):
+        # Format numeric ticks with a fixed number of decimals if specified
+        labels = []
+        for v in values:
+            try:
+                if isinstance(v, (int, float)):
+                    if self.decimals is not None:
+                        labels.append(f"{v:.{self.decimals}f}")
+                    else:
+                        labels.append(f"{v}")
+                else:
+                    labels.append("")
+            except Exception:
+                labels.append("")
+        return labels
 
 class MouseTracker(QObject):
     def __init__(self, parent, idx, feature):
@@ -110,6 +148,7 @@ class TimeViewFeature:
         top_layout.addWidget(self.settings_button)
         main_layout.addLayout(top_layout)
 
+        # Right sidebar settings panel (hidden by default)
         self.settings_panel = QWidget()
         self.settings_panel.setStyleSheet("""
         QWidget {
@@ -118,34 +157,42 @@ class TimeViewFeature:
             border-radius: 4px;
             padding: 10px;
         }
+        QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
+        self.settings_panel.setFixedWidth(250)
 
         settings_layout = QGridLayout()
         settings_layout.setSpacing(10)
         self.settings_panel.setLayout(settings_layout)
 
-        window_label = QLabel("Window Size (seconds)")
+        title = QLabel("Time View Settings")
+        title.setObjectName("settingsTitle")
+        settings_layout.addWidget(title, 0, 0, 1, 2)
+
+        window_label = QLabel("Window Seconds")
         window_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(window_label, 0, 0)
+        # Put label above the dropdown spanning both columns
+        settings_layout.addWidget(window_label, 1, 0, 1, 2)
 
         window_combo = QComboBox()
         window_combo.addItems([str(i) for i in range(1, 11)])
         window_combo.setCurrentText(str(self.window_seconds))
         window_combo.setStyleSheet("""
         QComboBox {
-            padding: 5px;
+            padding: 6px 8px;
             border: 1px solid #d0d0d0;
             border-radius: 4px;
             background-color: white;
-            min-width: 100px;
+            min-width: 120px;
         }
         """)
-        settings_layout.addWidget(window_combo, 0, 1)
+        # Dropdown sits below the label spanning both columns
+        settings_layout.addWidget(window_combo, 2, 0, 1, 2)
         self.settings_widgets = {"WindowSeconds": window_combo}
 
-        save_button = QPushButton("Save")
-        save_button.setStyleSheet("""
+        ok_button = QPushButton("OK")
+        ok_button.setStyleSheet("""
         QPushButton {
             background-color: #2196F3;
             color: white;
@@ -153,32 +200,33 @@ class TimeViewFeature:
             padding: 8px 16px;
             border-radius: 4px;
             font-size: 14px;
-            min-width: 100px;
+            min-width: 90px;
         }
         QPushButton:hover { background-color: #1e88e5; }
         QPushButton:pressed { background-color: #1976d2; }
         """)
-        save_button.clicked.connect(self.save_settings)
+        ok_button.clicked.connect(self.save_settings)
 
-        close_button = QPushButton("Close")
-        close_button.setStyleSheet("""
+        cancel_button = QPushButton("Cancel")
+        cancel_button.setStyleSheet("""
         QPushButton {
-            background-color: #f44336;
+            background-color: #9e9e9e;
             color: white;
             border: none;
             padding: 8px 16px;
             border-radius: 4px;
             font-size: 14px;
-            min-width: 100px;
+            min-width: 90px;
         }
-        QPushButton:hover { background-color: #e53935; }
-        QPushButton:pressed { background-color: #d32f2f; }
+        QPushButton:hover { background-color: #8d8d8d; }
+        QPushButton:pressed { background-color: #7b7b7b; }
         """)
-        close_button.clicked.connect(self.close_settings)
+        cancel_button.clicked.connect(self.close_settings)
 
-        settings_layout.addWidget(save_button, 1, 0)
-        settings_layout.addWidget(close_button, 1, 1)
-        main_layout.addWidget(self.settings_panel)
+        # Push buttons to the bottom
+        settings_layout.setRowStretch(3, 1)
+        settings_layout.addWidget(ok_button, 4, 0)
+        settings_layout.addWidget(cancel_button, 4, 1)
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
@@ -191,9 +239,19 @@ class TimeViewFeature:
         """)
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_content.setStyleSheet("background-color: #d1d6d9; border-radius: 5px; padding: 10px;")
+        # Add vertical spacing and outer margins between stacked plots for visual separation
+        self.scroll_layout.setSpacing(24)
+        self.scroll_layout.setContentsMargins(10, 10, 10, 14)
+        self.scroll_content.setStyleSheet("background-color: #ebeef2; border-radius: 5px; padding: 10px;")
         self.scroll_area.setWidget(self.scroll_content)
-        main_layout.addWidget(self.scroll_area)
+
+        # Content area: plots on the left, settings sidebar on the right
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.addWidget(self.scroll_area, 1)
+        content_layout.addWidget(self.settings_panel)
+        main_layout.addLayout(content_layout)
 
         self.widget.setLayout(main_layout)
 
@@ -265,26 +323,87 @@ class TimeViewFeature:
         self.main_channels = channel_count - self.tacho_channels_count
 
         for i in range(self.num_plots):
+            # Wrap each plot in its own container to create consistent visual gaps
+            plot_container = QWidget()
+            plot_container.setStyleSheet("background-color: #ebeef2; border-radius: 6px;")
+            container_layout = QVBoxLayout(plot_container)
+            container_layout.setContentsMargins(6, 6, 6, 12)
+            container_layout.setSpacing(4)
+
             plot_widget = PlotWidget()
-            plot_widget.setMinimumHeight(200)
-            plot_widget.setBackground('#d1d6d9')
+            # Increased plot height for better visibility
+            plot_widget.setMinimumHeight(280)
+            plot_widget.setBackground('#ebeef2')
             plot_widget.showGrid(x=True, y=True)
             plot_widget.addLegend()
 
             axis = TimeAxisItem(orientation='bottom')
-            plot_widget.setAxisItems({'bottom': axis})
+            # Choose left axis formatter: main channels by unit, frequency with 2 decimals, trigger default
+            ch_name_for_axis = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
+            unit_for_axis = self.channel_properties.get(ch_name_for_axis, {}).get("unit", "mil")
+            unit_for_axis_l = str(unit_for_axis).lower()
+            if i < self.main_channels:
+                if unit_for_axis_l == 'mm':
+                    left_axis = LeftAxisItem(orientation='left', decimals=3)
+                elif unit_for_axis_l == 'mil':
+                    left_axis = LeftAxisItem(orientation='left', decimals=1)
+                elif unit_for_axis_l == 'um':
+                    left_axis = LeftAxisItem(orientation='left', decimals=0)
+                elif unit_for_axis_l == 'v':
+                    left_axis = LeftAxisItem(orientation='left', decimals=3)
+                else:
+                    left_axis = LeftAxisItem(orientation='left', decimals=None)
+            else:
+                # Special channels
+                if i == self.main_channels:
+                    # Frequency axis: always 2 decimals
+                    left_axis = LeftAxisItem(orientation='left', decimals=1)
+                else:
+                    # Trigger: default formatting
+                    left_axis = LeftAxisItem(orientation='left', decimals=None)
+            plot_widget.setAxisItems({'bottom': axis, 'left': left_axis})
+            # Axis styling: bold ticks and larger fonts for readability
+            try:
+                tick_font = QFont()
+                tick_font.setPointSize(6)
+                tick_font.setBold(True)
+                for ax_name in ('bottom', 'left'):
+                    ax = plot_widget.getAxis(ax_name)
+                    ax.setStyle(tickFont=tick_font, tickTextOffset=6)
+                    ax.setPen(mkPen(color='#000000', width=1))
+                    ax.setTextPen(mkPen(color='#000000'))
+            except Exception:
+                pass
+            # Provide more space for multi-line tick labels and improve readability
+            try:
+                plot_item = plot_widget.getPlotItem()
+                plot_item.layout.setContentsMargins(12, 8, 12, 36)
+                plot_widget.getAxis('bottom').setHeight(46)
+                # Slightly increase tick text offset
+                plot_widget.getAxis('bottom').setStyle(tickTextOffset=20)
+            except Exception:
+                pass
+            container_layout.addWidget(plot_widget)
+            self.scroll_layout.addWidget(plot_container)
 
             channel_name = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
             unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
             y_label = f"Amplitude ({unit})" if i < self.main_channels else "Value"
 
             if i < self.main_channels:
-                # Set label for main channels too
-                plot_widget.getAxis('left').setLabel(f"{channel_name} ({y_label})")
+                # Set label for main channels (bold and larger size)
+                plot_widget.getAxis('left').setLabel(f"<b>{channel_name} ({y_label})</b>", **{'size': '13pt'})
             else:
-                channel_name = "Frequency" if i == self.main_channels else "Trigger"
-                plot_widget.setYRange(-0.5, 1.5, padding=0)
-                plot_widget.getAxis('left').setLabel(f"{channel_name} ({y_label})")
+                # Special channels: Frequency and Trigger
+                if i == self.main_channels:
+                    # Frequency axis: always 2 decimals
+                    left_axis = LeftAxisItem(orientation='left', decimals=1)
+                    plot_widget.getAxis('left').setLabel("<b>Frequency (Hz)</b>", **{'size': '13pt'})
+                else:
+                    # Trigger: default formatting
+                    left_axis = LeftAxisItem(orientation='left', decimals=None)
+                    plot_widget.getAxis('left').setLabel("<b>Trigger (0–1)</b>", **{'size': '13pt'})
+                    plot_widget.setYRange(-0.1, 1.1, padding=0)
 
             plot = plot_widget.plot([], [], pen=mkPen(color=self.plot_colors[i % len(self.plot_colors)], width=1))
             # Enable performance optimizations
@@ -438,7 +557,7 @@ class TimeViewFeature:
                     "sensitivity": 1.0,
                     "convertedSensitivity": 1.0
                 })
-                volts = counts_to_volts(values[ch], self.scaling_factor, self.off_set)
+                volts = (np.array(values[ch]) - self.off_set) * self.scaling_factor
                 # Build continuous timestamps by extending from previous last timestamp if available
                 if isinstance(self.fifo_times[ch], np.ndarray) and self.fifo_times[ch].size > 0:
                     last_time = self.fifo_times[ch][-1]
@@ -455,13 +574,14 @@ class TimeViewFeature:
                 # new_data = volts
 
                 if ch < self.main_channels:
-                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
-                    unit = (props.get("unit", "mil") or "mil").lower()
-                    new_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
+                    base_value = volts * (props["correctionValue"] * props["gain"]) / max(props["sensitivity"], 1e-12)
+                    new_data = base_value
                 elif ch == self.main_channels:
-                    new_data = volts / 100.0
+                    # Frequency channel: use payload values and scale by /100
+                    new_data = np.ceil(np.array(values[ch], dtype=np.float64) / 100.0)
                 else:
-                    new_data = volts 
+                    # Trigger channel: use payload directly and clamp to 0..1
+                    new_data = np.clip(np.array(values[ch], dtype=np.float64), 0.0, 1.0)
 
                 if len(self.fifo_data[ch]) != self.fifo_window_samples:
                     self.fifo_data[ch] = np.zeros(self.fifo_window_samples)
@@ -488,6 +608,19 @@ class TimeViewFeature:
         if self.is_scrolling or not self.is_initialized or not self.num_plots or self.num_plots <= 0:
             return
         try:
+            # Compute a common time window [end - window_seconds, end] across all plots
+            common_end_ts = None
+            if self.num_plots and self.num_plots > 0:
+                try:
+                    ends = []
+                    for i in range(int(self.num_plots)):
+                        if isinstance(self.fifo_times[i], np.ndarray) and len(self.fifo_times[i]) > 0:
+                            ends.append(self.fifo_times[i][-1].timestamp())
+                    if ends:
+                        common_end_ts = max(ends)
+                except Exception:
+                    common_end_ts = None
+
             for i in range(int(self.num_plots)):
                 if not self.needs_refresh[i]:
                     continue
@@ -497,10 +630,28 @@ class TimeViewFeature:
                 time_data = np.array([t.timestamp() for t in self.fifo_times[i]])
                 self.plots[i].setData(time_data, self.fifo_data[i])
                 if len(time_data) > 0:
-                    self.plot_widgets[i].setXRange(time_data.min(), time_data.max(), padding=0.1)
-                # Let pyqtgraph auto-range Y efficiently
-                self.plot_widgets[i].enableAutoRange(axis='y')
-                self.plot_widgets[i].getAxis('bottom').setStyle(tickTextOffset=10)
+                    if common_end_ts is not None and self.window_seconds:
+                        x_max = common_end_ts
+                        x_min = x_max - float(self.window_seconds)
+                        self.plot_widgets[i].setXRange(x_min, x_max, padding=0.0)
+                    else:
+                        # Fallback to channel-local range with no padding
+                        self.plot_widgets[i].setXRange(time_data.min(), time_data.max(), padding=0.0)
+                # Y scaling: fixed for Trigger, auto for others
+                if i == (self.main_channels + 1):
+                    try:
+                        self.plot_widgets[i].setYRange(-0.1, 1.1, padding=0)
+                    except Exception:
+                        pass
+                else:
+                    self.plot_widgets[i].enableAutoRange(axis='y')
+                # Ensure sufficient space for two-line labels during refresh
+                try:
+                    self.plot_widgets[i].getAxis('bottom').setHeight(46)
+                    self.plot_widgets[i].getPlotItem().layout.setContentsMargins(12, 8, 12, 36)
+                    self.plot_widgets[i].getAxis('bottom').setStyle(tickTextOffset=20)
+                except Exception:
+                    pass
                 self.needs_refresh[i] = False
         except Exception as e:
             logging.error(f"Error refreshing plots: {str(e)}")
@@ -559,15 +710,15 @@ class TimeViewFeature:
                     "sensitivity": 1.0,
                     "convertedSensitivity": 1.0
                 })
-                volts = counts_to_volts(values[ch], self.scaling_factor, self.off_set)
+                volts = (np.array(values[ch]) - self.off_set) * self.scaling_factor
                 if ch < self.main_channels:
-                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
-                    unit = (props.get("unit", "mil") or "mil").lower()
-                    new_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
+                    new_data = volts * (props["correctionValue"] * props["gain"]) / max(props["sensitivity"], 1e-12)
                 elif ch == self.main_channels:
-                    new_data = volts / 100.0
+                    # Frequency: payload /100
+                    new_data = np.array(values[ch], dtype=np.float64) / 100.0
                 else:
-                    new_data = volts
+                    # Trigger 0..1
+                    new_data = np.clip(np.array(values[ch], dtype=np.float64), 0.0, 1.0)
 
                 self.fifo_data[ch] = new_data
                 self.fifo_times[ch] = new_times
@@ -637,21 +788,13 @@ class TimeViewFeature:
 
                 volts = (np.array(values[ch]) - self.off_set) * self.scaling_factor
                 if ch < self.main_channels:
-                    base_value = volts * (props["correctionValue"] * props["gain"]) / max(props["sensitivity"], 1e-12)
                     unit = (props.get("unit", "mil") or "mil").lower()
-                    if props.get("type", "Displacement") == "Displacement":
-                        if unit == "mil":
-                            new_data = volts / 25.4
-                        elif unit == "um":
-                            new_data = base_value
-                        elif unit == "mm":
-                            new_data = base_value / 1000.0
-                        else:
-                            new_data = base_value
+                    if unit == "v":
+                        new_data = volts
                     else:
-                        new_data = base_value
+                        new_data = volts * (props["correctionValue"] * props["gain"]) * props["sensitivity"]
                 elif ch == self.main_channels:
-                    new_data = volts / 100.0
+                    new_data = volts / 10
                 else:
                     new_data = volts
 

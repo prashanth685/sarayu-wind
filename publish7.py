@@ -22,7 +22,7 @@ class MQTTPublisher(QObject):
         self.frequency = self.freq_start
         self.sweep_direction = 1  # 1 = increasing, -1 = decreasing
 
-        self.amplitude = 1.5
+        self.amplitude = 1.0
         self.offset = 32768
         self.sample_rate = 4096
         self.time_per_message = 1.0

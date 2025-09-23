@@ -15,7 +15,6 @@ from PyQt5.QtCore import (
 from PyQt5.QtGui import QPainter, QPen, QBrush, QColor
 import pyqtgraph as pg
 from pyqtgraph import PlotWidget, mkPen, AxisItem, InfiniteLine, SignalProxy
-from utils.signal_calibration import counts_to_volts, calibrate, convert_unit, tacho_scale
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -34,7 +33,7 @@ class QRangeSlider(QWidget):
         self.right_value = 1000
         self.dragging = None
         self.setMouseTracking(True)
-        self.setStyleSheet("background-color: #d1d6d9;")
+        self.setStyleSheet("background-color: #ebeef2;")
 
     def setRange(self, min_val, max_val):
         self.min_value = min_val
@@ -174,7 +173,7 @@ class TimeReportFeature:
         self.max_points_to_plot = 100000
         self.plot_colors = [
             '#0000FF', '#FF0000', '#00FF00', '#800080', '#FFA500', '#A52A2A',
-            '#FFC0CB', '#0000FF', '#0000FF', '#0000FF', '#0000FF', '#FFD700',
+            "#CF1E3B", '#0000FF', '#0000FF', '#0000FF', '#0000FF', '#FFD700',
             '#FF69B4', '#8A2BE2', '#FF6347', '#20B2AA', '#ADFF2F', '#9932CC',
             '#FF7F50', '#00FA9A', '#9400D3'
         ]
@@ -253,7 +252,7 @@ class TimeReportFeature:
         layout.addWidget(header, alignment=Qt.AlignCenter)
 
         controls_widget = QWidget()
-        controls_widget.setStyleSheet("background-color: #d1d6d9; border-radius: 5px; padding: 10px;")
+        controls_widget.setStyleSheet("background-color: #ebeef2; border-radius: 5px; padding: 10px;")
         controls_layout = QVBoxLayout()
         controls_widget.setLayout(controls_layout)
 
@@ -413,7 +412,7 @@ class TimeReportFeature:
         """)
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
-        self.scroll_content.setStyleSheet("background-color: #d1d6d9; border-radius: 5px; padding: 10px;")
+        self.scroll_content.setStyleSheet("background-color: #ebeef2; border-radius: 5px; padding: 10px;")
         self.scroll_area.setWidget(self.scroll_content)
         layout.addWidget(self.scroll_area, stretch=1)
 
@@ -558,7 +557,7 @@ class TimeReportFeature:
             for ch in range(total_channels):
                 plot_widget = PlotWidget()
                 plot_widget.setMinimumHeight(200)
-                plot_widget.setBackground('#d1d6d9')
+                plot_widget.setBackground('#ebeef2')
                 plot_widget.showGrid(x=True, y=True)
                 plot_widget.addLegend()
                 axis = TimeAxisItem(orientation='bottom')
@@ -861,7 +860,7 @@ class TimeReportFeature:
             for ch in range(main_channels):
                 raw_counts = combined_data[ch]
                 # Convert ADC counts to volts (centered around 0V)
-                volts = counts_to_volts(raw_counts, self.scaling_factor, 32768.0)
+                volts = (np.asarray(raw_counts, dtype=np.float64) - 32768.0) * self.scaling_factor
 
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch + 1}"
                 props = self.channel_properties.get(channel_name, {
@@ -869,12 +868,22 @@ class TimeReportFeature:
                 })
 
                 try:
-                    base_value = calibrate(volts, props["correctionValue"], props["gain"], props["sensitivity"])
+                    base_value = volts * (props["correctionValue"] * props["gain"]) / max(props["sensitivity"], 1e-12)
                 except (ZeroDivisionError, TypeError) as cal_error:
                     logging.error(f"Calibration error for channel {channel_name}: {cal_error}. Using volts.")
                     base_value = volts
                 unit = (props.get("unit", "mil") or "mil").lower()
-                calibrated_data = convert_unit(base_value, unit, props.get("type", "Displacement"))
+                if props.get("type", "Displacement") == "Displacement":
+                    if unit == "mil":
+                        calibrated_data = base_value / 25.4
+                    elif unit == "um":
+                        calibrated_data = base_value
+                    elif unit == "mm":
+                        calibrated_data = base_value / 1000.0
+                    else:
+                        calibrated_data = base_value
+                else:
+                    calibrated_data = base_value
 
                 if needs_downsampling and len(calibrated_data) > 0:
                     calibrated_data = self.downsample_array(calibrated_data, downsample_factor)
@@ -883,8 +892,8 @@ class TimeReportFeature:
             # Handle Tacho Channels to mirror Time View scaling
             for tch_idx, ch in enumerate(range(main_channels, total_channels)):
                 raw_counts = combined_data[ch]
-                volts = counts_to_volts(raw_counts, self.scaling_factor, 32768.0)
-                processed_tacho_data = tacho_scale(volts, tch_idx)
+                volts = (np.asarray(raw_counts, dtype=np.float64) - 32768.0) * self.scaling_factor
+                processed_tacho_data = (volts / 100.0) if tch_idx == 0 else volts
 
                 if needs_downsampling and len(processed_tacho_data) > 0:
                     processed_tacho_data = self.downsample_array(processed_tacho_data, downsample_factor)

@@ -6,7 +6,6 @@ from PyQt5.QtCore import QTimer, Qt
 import pyqtgraph as pg
 import numpy as np
 import logging
-from utils.signal_calibration import counts_to_volts, calibrate, convert_unit
 from scipy.fft import fft
 from scipy.signal import get_window
 from datetime import datetime
@@ -149,8 +148,10 @@ class FFTViewFeature:
             border-radius: 4px;
             padding: 10px;
         }
+        QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
+        self.settings_panel.setFixedWidth(250)
 
         settings_layout = QGridLayout()
         settings_layout.setSpacing(10)
@@ -158,107 +159,111 @@ class FFTViewFeature:
 
         self.settings_widgets = {}
 
+        title = QLabel("FFT View Settings")
+        title.setObjectName("settingsTitle")
+        settings_layout.addWidget(title, 0, 0, 1, 2)
+
         window_label = QLabel("Window Type")
         window_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(window_label, 0, 0)
+        settings_layout.addWidget(window_label, 1, 0)
         window_combo = QComboBox()
         window_combo.addItems(["Hamming", "Hanning", "Blackman", "Flat-top", "None"])
         window_combo.setCurrentText(self.settings.window_type)
         window_combo.setStyleSheet("""
         QComboBox { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(window_combo, 0, 1)
+        settings_layout.addWidget(window_combo, 1, 1)
         self.settings_widgets["WindowType"] = window_combo
 
         start_freq_label = QLabel("Start Frequency (Hz)")
         start_freq_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(start_freq_label, 1, 0)
+        settings_layout.addWidget(start_freq_label, 2, 0)
         start_freq_edit = QLineEdit(str(self.settings.start_frequency))
         start_freq_edit.setValidator(QDoubleValidator(0.0, 10000.0, 2))
         start_freq_edit.setStyleSheet("""
         QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(start_freq_edit, 1, 1)
+        settings_layout.addWidget(start_freq_edit, 2, 1)
         self.settings_widgets["StartFrequency"] = start_freq_edit
 
         stop_freq_label = QLabel("Stop Frequency (Hz)")
         stop_freq_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(stop_freq_label, 2, 0)
+        settings_layout.addWidget(stop_freq_label, 3, 0)
         stop_freq_edit = QLineEdit(str(self.settings.stop_frequency))
         stop_freq_edit.setValidator(QDoubleValidator(0.0, 10000.0, 2))
         stop_freq_edit.setStyleSheet("""
         QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(stop_freq_edit, 2, 1)
+        settings_layout.addWidget(stop_freq_edit, 3, 1)
         self.settings_widgets["StopFrequency"] = stop_freq_edit
 
         lines_label = QLabel("Number of Lines")
         lines_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(lines_label, 3, 0)
+        settings_layout.addWidget(lines_label, 4, 0)
         lines_edit = QLineEdit(str(self.settings.number_of_lines))
         lines_edit.setValidator(QIntValidator(100, 3200))
         lines_edit.setStyleSheet("""
         QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(lines_edit, 3, 1)
+        settings_layout.addWidget(lines_edit, 4, 1)
         self.settings_widgets["NumberOfLines"] = lines_edit
 
         overlap_label = QLabel("Overlap Percentage (%)")
         overlap_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(overlap_label, 4, 0)
+        settings_layout.addWidget(overlap_label, 5, 0)
         overlap_edit = QLineEdit(str(self.settings.overlap_percentage))
         overlap_edit.setValidator(QDoubleValidator(0.0, 99.9, 2))
         overlap_edit.setStyleSheet("""
         QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(overlap_edit, 4, 1)
+        settings_layout.addWidget(overlap_edit, 5, 1)
         self.settings_widgets["OverlapPercentage"] = overlap_edit
 
         avg_mode_label = QLabel("Averaging Mode")
         avg_mode_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(avg_mode_label, 5, 0)
+        settings_layout.addWidget(avg_mode_label, 6, 0)
         avg_mode_combo = QComboBox()
         avg_mode_combo.addItems(["No Averaging", "Linear", "Exponential"])
         avg_mode_combo.setCurrentText(self.settings.averaging_mode)
         avg_mode_combo.setStyleSheet("""
         QComboBox { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(avg_mode_combo, 5, 1)
+        settings_layout.addWidget(avg_mode_combo, 6, 1)
         self.settings_widgets["AveragingMode"] = avg_mode_combo
 
         avg_num_label = QLabel("Number of Averages")
         avg_num_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(avg_num_label, 6, 0)
+        settings_layout.addWidget(avg_num_label, 7, 0)
         avg_num_edit = QLineEdit(str(self.settings.number_of_averages))
         avg_num_edit.setValidator(QIntValidator(1, 100))
         avg_num_edit.setStyleSheet("""
         QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(avg_num_edit, 6, 1)
+        settings_layout.addWidget(avg_num_edit, 7, 1)
         self.settings_widgets["NumberOfAverages"] = avg_num_edit
 
         weight_label = QLabel("Weighting Mode")
         weight_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(weight_label, 7, 0)
+        settings_layout.addWidget(weight_label, 8, 0)
         weight_combo = QComboBox()
         weight_combo.addItems(["Linear", "A-Weighting", "B-Weighting", "C-Weighting"])
         weight_combo.setCurrentText(self.settings.weighting_mode)
         weight_combo.setStyleSheet("""
         QComboBox { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(weight_combo, 7, 1)
+        settings_layout.addWidget(weight_combo, 8, 1)
         self.settings_widgets["WeightingMode"] = weight_combo
 
         linear_label = QLabel("Linear Mode")
         linear_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(linear_label, 8, 0)
+        settings_layout.addWidget(linear_label, 9, 0)
         linear_combo = QComboBox()
         linear_combo.addItems(["Continuous", "Peak Hold", "Time Synchronous"])
         linear_combo.setCurrentText(self.settings.linear_mode)
         linear_combo.setStyleSheet("""
         QComboBox { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(linear_combo, 8, 1)
+        settings_layout.addWidget(linear_combo, 9, 1)
         self.settings_widgets["LinearMode"] = linear_combo
 
         save_button = QPushButton("Save")
@@ -277,9 +282,10 @@ class FFTViewFeature:
         """)
         close_button.clicked.connect(self.close_settings)
 
-        settings_layout.addWidget(save_button, 9, 0)
-        settings_layout.addWidget(close_button, 9, 1)
-        main_layout.addWidget(self.settings_panel)
+        # Push buttons to the bottom of the sidebar
+        settings_layout.setRowStretch(10, 1)
+        settings_layout.addWidget(save_button, 11, 0)
+        settings_layout.addWidget(close_button, 11, 1)
 
         plot_layout = QHBoxLayout() if self.layout_type == "horizontal" else QVBoxLayout()
 
@@ -308,7 +314,15 @@ class FFTViewFeature:
         self.phase_plot_item = self.phase_plot_widget.plot(pen=pg.mkPen(color='#e74c3c', width=2))
         plot_layout.addWidget(self.phase_plot_widget)
 
-        main_layout.addLayout(plot_layout)
+        # Create a left container to hold the plots and add to a content layout with the right sidebar
+        left_container = QWidget()
+        left_container.setLayout(plot_layout)
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.addWidget(left_container, 1)
+        content_layout.addWidget(self.settings_panel)
+        main_layout.addLayout(content_layout)
 
         self.update_timer.start(self.update_interval)
 
@@ -316,9 +330,7 @@ class FFTViewFeature:
         try:
             if not self.db.is_connected():
                 self.db.reconnect()
-            project_data = self.db.get_project_data(self.project_name)
-            self.project_id = project_data.get("_id")
-            self.settings = self.load_settings_from_database() or FFTSettings(self.project_id)
+            self.settings = self.load_settings_from_database() or FFTSettings(None)
             # Load channel properties so we can calibrate magnitudes per unit
             self.load_channel_properties()
             self.update_settings_ui()
@@ -351,12 +363,45 @@ class FFTViewFeature:
         except Exception as e:
             logging.error(f"FFT: Error loading channel properties: {e}")
 
+    def _resolve_current_topic(self):
+        try:
+            project_data = self.db.get_project_data(self.project_name)
+            for model in project_data.get("models", []):
+                if model.get("name") == self.model_name:
+                    return model.get("tagName")
+        except Exception:
+            pass
+        return None
+
+    def _resolve_channel_name(self):
+        # Prefer explicit channel_name; otherwise resolve from channel_index
+        if self.channel_name:
+            return self.channel_name
+        try:
+            if self.channel_index is not None and 0 <= self.channel_index < len(self.channel_names):
+                return self.channel_names[self.channel_index]
+        except Exception:
+            pass
+        return None
+
     def load_settings_from_database(self):
         try:
-            collection = self.mongo_client["changed_db"]["fft_settings"]
-            settings_data = collection.find_one({"project_id": self.project_id})
+            # Use the app's configured FFTSettings collection and schema
+            collection = self.mongo_client["changed_db"]["FFTSettings"]
+            topic = self._resolve_current_topic()
+            ch_name = self._resolve_channel_name()
+            query = {
+                "project_name": self.project_name,
+                "model_name": self.model_name,
+                "topic": topic,
+                "email": getattr(self.db, "email", None),
+                "channel_name": ch_name,
+            }
+            # Remove None values from the query
+            query = {k: v for k, v in query.items() if v is not None}
+            settings_data = collection.find_one(query)
             if settings_data:
-                self.settings = FFTSettings(self.project_id)
+                self.settings = FFTSettings(None)
                 self.settings.window_type = settings_data.get("window_type", "Hamming")
                 self.settings.start_frequency = settings_data.get("start_frequency", 10.0)
                 self.settings.stop_frequency = settings_data.get("stop_frequency", 2000.0)
@@ -375,14 +420,30 @@ class FFTViewFeature:
 
     def save_settings_to_database(self):
         try:
-            collection = self.mongo_client["sarayu"]["fft_settings"]
+            # Use the app's configured FFTSettings collection and schema
+            collection = self.mongo_client["changed_db"]["FFTSettings"]
+            topic = self._resolve_current_topic()
+            ch_name = self._resolve_channel_name()
             self.settings.updated_at = datetime.utcnow()
-            settings_dict = vars(self.settings)
-            collection.update_one(
-                {"project_id": self.project_id},
-                {"$set": settings_dict},
-                upsert=True
-            )
+            settings_dict = {
+                "project_name": self.project_name,
+                "model_name": self.model_name,
+                "topic": topic,
+                "email": getattr(self.db, "email", None),
+                "channel_name": ch_name,
+                "window_type": self.settings.window_type,
+                "start_frequency": self.settings.start_frequency,
+                "stop_frequency": self.settings.stop_frequency,
+                "number_of_lines": self.settings.number_of_lines,
+                "overlap_percentage": self.settings.overlap_percentage,
+                "averaging_mode": self.settings.averaging_mode,
+                "number_of_averages": self.settings.number_of_averages,
+                "weighting_mode": self.settings.weighting_mode,
+                "linear_mode": self.settings.linear_mode,
+                "updated_at": self.settings.updated_at,
+            }
+            query = {k: settings_dict[k] for k in ("project_name", "model_name", "topic", "email", "channel_name") if settings_dict.get(k) is not None}
+            collection.update_one(query, {"$set": settings_dict}, upsert=True)
         except Exception as e:
             logging.error(f"Error saving FFT settings to database: {str(e)}")
 
@@ -497,9 +558,9 @@ class FFTViewFeature:
 
             # Sample rate
             self.sample_rate = sample_rate if sample_rate > 0 else 1000
-            # Counts -> volts (center around 0V) using shared helper
+            # Counts -> volts (center around 0V)
             raw_counts = np.array(channel_data[:self.max_samples], dtype=np.float64)
-            volts = counts_to_volts(raw_counts, self.scaling_factor, self.off_set)
+            volts = (raw_counts - self.off_set) * self.scaling_factor
 
             # Determine channel props
             ch_name = None
@@ -509,11 +570,18 @@ class FFTViewFeature:
                 "unit": "mil", "correctionValue": 1.0, "gain": 1.0, "sensitivity": 1.0
             })
             try:
-                base_value = calibrate(volts, props.get("correctionValue", 1.0), props.get("gain", 1.0), props.get("sensitivity", 1.0))
+                base_value = volts * (props.get("correctionValue", 1.0) * props.get("gain", 1.0)) / max(props.get("sensitivity", 1.0), 1e-12)
             except Exception:
                 base_value = volts
             unit = (props.get("unit", "mil") or "mil").lower()
-            calibrated = convert_unit(base_value, unit, "Displacement")
+            if unit == "mil":
+                calibrated = base_value / 25.4
+            elif unit == "um":
+                calibrated = base_value
+            elif unit == "mm":
+                calibrated = base_value / 1000.0
+            else:
+                calibrated = base_value
 
             # Update buffers
             self.latest_data = calibrated.astype(np.float64)
