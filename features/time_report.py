@@ -25,7 +25,8 @@ class QRangeSlider(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(30)
+        # Increase height to accommodate larger handles and labels above them
+        self.setMinimumHeight(54)
         self.setMinimumWidth(300)
         self.min_value = 0
         self.max_value = 1000
@@ -51,20 +52,37 @@ class QRangeSlider(QWidget):
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        groove_rect = QRect(10, 10, self.width() - 20, 8)
+        groove_rect = QRect(10, 18, self.width() - 20, 8)
         painter.setPen(QPen(QColor("#1a73e8")))
         painter.setBrush(QColor("#34495e"))
         painter.drawRoundedRect(groove_rect, 4, 4)
         left_pos = int(self._value_to_pos(self.left_value))
         right_pos = int(self._value_to_pos(self.right_value))
-        selected_rect = QRect(left_pos, 10, right_pos - left_pos, 8)
+        selected_rect = QRect(left_pos, 18, right_pos - left_pos, 8)
         painter.setBrush(QColor("#90caf9"))
         painter.drawRoundedRect(selected_rect, 4, 4)
         painter.setPen(QPen(QColor("#1a73e8")))
+        # Larger handles (balls)
+        handle_size = 24
+        handle_radius = handle_size // 2
         painter.setBrush(QColor("#42a5f5" if self.dragging == 'left' else "#1a73e8"))
-        painter.drawEllipse(left_pos - 9, 6, 18, 18)
+        painter.drawEllipse(left_pos - handle_radius, 18 - (handle_radius - 4), handle_size, handle_size)
         painter.setBrush(QColor("#42a5f5" if self.dragging == 'right' else "#1a73e8"))
-        painter.drawEllipse(right_pos - 9, 6, 18, 18)
+        painter.drawEllipse(right_pos - handle_radius, 18 - (handle_radius - 4), handle_size, handle_size)
+
+        # Draw human-readable time labels above handles
+        try:
+            left_dt = datetime.fromtimestamp(float(self.left_value)) if isinstance(self.left_value, (int, float)) else None
+            right_dt = datetime.fromtimestamp(float(self.right_value)) if isinstance(self.right_value, (int, float)) else None
+            painter.setPen(QPen(QColor("#0d47a1")))
+            if left_dt is not None:
+                left_text = left_dt.strftime('%Y-%m-%d %H:%M:%S')
+                painter.drawText(max(4, left_pos - 100), 12, 200, 16, Qt.AlignHCenter | Qt.AlignVCenter, left_text)
+            if right_dt is not None:
+                right_text = right_dt.strftime('%Y-%m-%d %H:%M:%S')
+                painter.drawText(max(4, right_pos - 100), 12, 200, 16, Qt.AlignHCenter | Qt.AlignVCenter, right_text)
+        except Exception:
+            pass
 
     def _value_to_pos(self, value):
         if self.max_value == self.min_value:
@@ -81,9 +99,10 @@ class QRangeSlider(QWidget):
         pos = event.pos().x()
         left_pos = self._value_to_pos(self.left_value)
         right_pos = self._value_to_pos(self.right_value)
-        if abs(pos - left_pos) < abs(pos - right_pos) and abs(pos - left_pos) < 10:
+        # Increase hit area due to larger handles
+        if abs(pos - left_pos) < abs(pos - right_pos) and abs(pos - left_pos) < 14:
             self.dragging = 'left'
-        elif abs(pos - right_pos) <= abs(pos - left_pos) and abs(pos - right_pos) < 10:
+        elif abs(pos - right_pos) <= abs(pos - left_pos) and abs(pos - right_pos) < 14:
             self.dragging = 'right'
         self.update()
 
@@ -257,10 +276,10 @@ class TimeReportFeature:
         controls_widget.setLayout(controls_layout)
 
         file_layout = QHBoxLayout()
-        file_label = QLabel(f"Select Saved File (Model: {self.model_name or 'None'}, Channel: {self.channel or 'All'}):")
+        file_label = QLabel("Recording & Saved File:")
         file_label.setStyleSheet("color: black; font-size: 16px; font: bold")
         self.file_combo = QComboBox()
-        self.file_combo.addItem("Loading files...")
+        self.file_combo.addItem("Loading files...", userData=None)
         self.file_combo.setStyleSheet("""
             QComboBox {
                 background-color: #fdfdfd;
@@ -309,9 +328,10 @@ class TimeReportFeature:
                 color: #0d47a1;
             }
         """)
-        self.file_combo.currentTextChanged.connect(self.on_filename_selected)
+        # Use index-based change to reliably get userData (actual filename)
+        self.file_combo.currentIndexChanged.connect(self.on_file_index_changed)
 
-        self.ok_button = QPushButton("OK")
+        self.ok_button = QPushButton("Fetch Data")
         self.ok_button.setStyleSheet("""
             QPushButton {
                 background-color: #1a73e8;
@@ -339,27 +359,7 @@ class TimeReportFeature:
         file_layout.addStretch()
         controls_layout.addLayout(file_layout)
 
-        time_range_layout = QHBoxLayout()
-        start_time_label = QLabel("Select Start Time:")
-        start_time_label.setStyleSheet("color: black; font-size: 14px; font: bold")
-        self.start_time_edit = QDateTimeEdit()
-        self.start_time_edit.setStyleSheet("background-color: #34495e; color: white; border: 2px solid black; padding: 15px; font: bold; width: 200px")
-        self.start_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.start_time_edit.dateTimeChanged.connect(self.validate_time_range)
-
-        end_time_label = QLabel("Select End Time:")
-        end_time_label.setStyleSheet("color: black; font-size: 14px; font: bold")
-        self.end_time_edit = QDateTimeEdit()
-        self.end_time_edit.setStyleSheet("background-color: #34495e; color: white; border: 2px solid black; padding: 15px; font: bold; width: 200px")
-        self.end_time_edit.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
-        self.end_time_edit.dateTimeChanged.connect(self.validate_time_range)
-
-        time_range_layout.addWidget(start_time_label)
-        time_range_layout.addWidget(self.start_time_edit)
-        time_range_layout.addWidget(end_time_label)
-        time_range_layout.addWidget(self.end_time_edit)
-        time_range_layout.addStretch()
-        controls_layout.addLayout(time_range_layout)
+        # Removed manual Start/End time editors; selection is via the dual range slider only
 
         slider_layout = QGridLayout()
         slider_label = QLabel("Drag Time Range:")
@@ -372,15 +372,7 @@ class TimeReportFeature:
         slider_layout.setColumnStretch(1, 1)
         controls_layout.addLayout(slider_layout)
 
-        time_info_layout = QHBoxLayout()
-        self.start_time_label = QLabel("File Start Time: Loading...")
-        self.start_time_label.setStyleSheet("color: black; font-size: 14px; font: bold")
-        self.stop_time_label = QLabel("File Stop Time: Loading...")
-        self.stop_time_label.setStyleSheet("color: black; font-size: 14px; font: bold")
-        time_info_layout.addWidget(self.start_time_label)
-        time_info_layout.addWidget(self.stop_time_label)
-        time_info_layout.addStretch()
-        controls_layout.addLayout(time_info_layout)
+        # Removed file start/end time labels above; slider now shows timestamps near handles
 
         layout.addWidget(controls_widget)
 
@@ -417,8 +409,6 @@ class TimeReportFeature:
         layout.addWidget(self.scroll_area, stretch=1)
 
         self.file_combo.setEnabled(False)
-        self.start_time_edit.setEnabled(False)
-        self.end_time_edit.setEnabled(False)
 
     def load_data_async(self):
         try:
@@ -429,11 +419,24 @@ class TimeReportFeature:
                 self.file_combo.addItem("No Files Available")
                 self.ok_button.setEnabled(False)
             else:
-                self.file_combo.addItem("Select File")
-                self.file_combo.addItems(self.filenames)
+                self.file_combo.addItem("Select File", userData=None)
+                # Build rich labels with start/end times but store raw filename in userData
+                for fn in self.filenames:
+                    try:
+                        fstart, fend = self.get_file_times(fn)
+                        start_str = fstart.strftime('%Y-%m-%d %H:%M:%S') if fstart else 'N/A'
+                        end_str = fend.strftime('%Y-%m-%d %H:%M:%S') if fend else 'N/A'
+                        display = f"{fn} | {self.model_name or 'Model'} | {start_str} → {end_str}"
+                    except Exception:
+                        display = f"{fn} | {self.model_name or 'Model'}"
+                    self.file_combo.addItem(display, userData=fn)
                 self.ok_button.setEnabled(True)
             if self.selected_filename and self.selected_filename in self.filenames:
-                self.file_combo.setCurrentText(self.selected_filename)
+                # Find index with matching userData
+                for i in range(self.file_combo.count()):
+                    if self.file_combo.itemData(i) == self.selected_filename:
+                        self.file_combo.setCurrentIndex(i)
+                        break
                 # Trigger load automatically if filename is pre-selected
                 # self.on_filename_selected(self.selected_filename) # Let user click OK
             else:
@@ -449,49 +452,37 @@ class TimeReportFeature:
             if self.console:
                 self.console.append_to_console(f"Error loading files: {e}")
 
-    def on_filename_selected(self, filename):
-        self.selected_filename = filename
-        if filename and filename not in ["Loading files...", "No Files Available", "Error Loading Files", "Select File"]:
-            self.ok_button.setEnabled(True)
-            # Load time labels and enable time controls
-            self.update_time_labels(filename)
-        else:
-            self.ok_button.setEnabled(False)
-            self.start_time_edit.setEnabled(False)
-            self.end_time_edit.setEnabled(False)
-            self.start_time_label.setText("File Start Time: N/A")
-            self.stop_time_label.setText("File Stop Time: N/A")
-            self.clear_plots()
+    def on_file_index_changed(self, index):
+        try:
+            filename = self.file_combo.itemData(index)
+            self.selected_filename = filename
+            if filename and filename not in ["Loading files...", "No Files Available", "Error Loading Files", "Select File"]:
+                self.ok_button.setEnabled(True)
+                # Load time labels and enable time controls
+                self.update_time_labels(filename)
+            else:
+                self.ok_button.setEnabled(False)
+                self.clear_plots()
+        except Exception as e:
+            logging.error(f"Error handling file index change: {e}")
 
     def validate_time_range(self):
-        if not self.start_time_edit.isEnabled() or not self.end_time_edit.isEnabled():
-             return
-        start = self.start_time_edit.dateTime().toPython().timestamp()
-        end = self.end_time_edit.dateTime().toPython().timestamp()
-        if start > end:
-            # Correct the start time to match end time if it's later
-            self.start_time_edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(end)))
+        # Manual date/time editors removed; keep method for safety if invoked elsewhere (no-op)
+        pass
 
     def update_time_from_slider(self):
         left, right = self.time_slider.getValues()
         self.start_time = left
         self.end_time = right
-        # Block signals to prevent recursive calls
-        self.start_time_edit.blockSignals(True)
-        self.end_time_edit.blockSignals(True)
-        self.start_time_edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(left)))
-        self.end_time_edit.setDateTime(QDateTime.fromSecsSinceEpoch(int(right)))
-        self.start_time_edit.blockSignals(False)
-        self.end_time_edit.blockSignals(False)
+        # Editors removed; nothing else to sync
 
     def update_time_labels(self, filename):
         try:
             messages = self.db.get_history_messages(self.project_name, self.model_name, filename=filename)
             if not messages:
-                self.start_time_label.setText("File Start Time: N/A")
-                self.stop_time_label.setText("File Stop Time: N/A")
-                self.start_time_edit.setEnabled(False)
-                self.end_time_edit.setEnabled(False)
+                # No messages; reset time range on slider
+                self.time_slider.setRange(0, 1)
+                self.time_slider.setValues(0, 1)
                 return
 
             # Sort messages by creation time to get accurate start/end
@@ -516,29 +507,14 @@ class TimeReportFeature:
             self.file_end_time = file_end.timestamp()
             self.start_time = self.file_start_time
             self.end_time = self.file_end_time
-            self.start_time_label.setText(f"File Start Time: {file_start.strftime('%Y-%m-%d %H:%M:%S')}")
-            self.stop_time_label.setText(f"File Stop Time: {file_end.strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # Block signals to prevent triggering validate_time_range
-            self.start_time_edit.blockSignals(True)
-            self.end_time_edit.blockSignals(True)
-            self.start_time_edit.setDateTime(QDateTime.fromString(file_start.isoformat(), Qt.ISODate))
-            self.end_time_edit.setDateTime(QDateTime.fromString(file_end.isoformat(), Qt.ISODate))
-            self.start_time_edit.blockSignals(False)
-            self.end_time_edit.blockSignals(False)
-            
+            # Update slider range and values only; labels/edits removed
             self.time_slider.setRange(self.file_start_time, self.file_end_time)
             self.time_slider.setValues(self.start_time, self.end_time)
-            self.start_time_edit.setEnabled(True)
-            self.end_time_edit.setEnabled(True)
             logging.debug(f"Time labels updated for {filename}")
 
         except Exception as e:
             logging.error(f"Error updating time labels for {filename}: {e}", exc_info=True)
-            self.start_time_label.setText("File Start Time: Error")
-            self.stop_time_label.setText("File Stop Time: Error")
-            self.start_time_edit.setEnabled(False)
-            self.end_time_edit.setEnabled(False)
+            # On error, do not enable time selection
             if self.console:
                 self.console.append_to_console(f"Error updating time labels for {filename}: {e}")
 
@@ -629,7 +605,9 @@ class TimeReportFeature:
         return downsampled
 
     def plot_data(self):
-        filename = self.selected_filename or self.file_combo.currentText()
+        # Use the userData (actual filename) for plotting
+        current_idx = self.file_combo.currentIndex()
+        filename = self.selected_filename or self.file_combo.itemData(current_idx)
         if not filename or filename in ["No Files Available", "Error Loading Files", "Loading files...", "Select File"]:
             self.clear_plots()
             if self.console:
@@ -1054,6 +1032,27 @@ class TimeReportFeature:
         self.sample_rate = None
         self.samples_per_channel = None
         logging.debug("Cleared all plots and associated data")
+
+    def get_file_times(self, filename):
+        """Return (start_datetime, end_datetime) for a file by inspecting messages."""
+        try:
+            messages = self.db.get_history_messages(self.project_name, self.model_name, filename=filename)
+            if not messages:
+                return None, None
+            sorted_messages = sorted(messages, key=lambda x: datetime.fromisoformat(x['createdAt'].replace('Z', '+00:00')))
+            first_message = sorted_messages[0]
+            last_message = sorted_messages[-1]
+            first_created_at = datetime.fromisoformat(first_message['createdAt'].replace('Z', '+00:00'))
+            last_created_at = datetime.fromisoformat(last_message['createdAt'].replace('Z', '+00:00'))
+            sampling_size = last_message.get("samplingSize", 0) or 0
+            sampling_rate = last_message.get("samplingRate", 1) or 1
+            duration = (float(sampling_size) / float(sampling_rate)) if float(sampling_rate) > 0 else 0
+            file_start = first_created_at
+            file_end = last_created_at + timedelta(seconds=duration)
+            return file_start, file_end
+        except Exception as e:
+            logging.error(f"Error getting file times for {filename}: {e}")
+            return None, None
 
     def mouse_enter(self, idx):
         self.active_line_idx = idx

@@ -360,7 +360,7 @@ class TimeViewFeature:
                     left_axis = LeftAxisItem(orientation='left', decimals=1)
                 else:
                     # Trigger: default formatting
-                    left_axis = LeftAxisItem(orientation='left', decimals=None)
+                    left_axis = LeftAxisItem(orientation='left', decimals=1)
             plot_widget.setAxisItems({'bottom': axis, 'left': left_axis})
             # Axis styling: bold ticks and larger fonts for readability
             try:

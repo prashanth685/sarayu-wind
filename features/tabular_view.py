@@ -527,6 +527,12 @@ class TabularViewFeature:
             unit = (props.get("Unit", "mil") or "mil").lower()
             if unit == "v":
                 calibrated = volts
+            elif unit == "mm":
+                calibrated = volts / 7.874
+            elif unit == "um":
+                calibrated = volts / 0.007874
+            elif unit == "mil":
+                calibrated = volts / 0.2
             else:
                 calibrated = volts * (props["CorrectionValue"] * props["Gain"]) * props["Sensitivity"]
             logging.debug(f"Processed data for {channel_name} with unit {unit}, shape: {calibrated.shape}")

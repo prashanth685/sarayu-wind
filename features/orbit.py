@@ -82,6 +82,8 @@ class OrbitFeature(QObject):
             }
         """)
         self.primary_combo.currentIndexChanged.connect(self.on_primary_combo_changed)
+        # Primary selection is fixed by tree_view updates; disable manual changes
+        self.primary_combo.setEnabled(False)
 
         secondary_label = QLabel("Secondary Channel:")
         self.secondary_combo = QComboBox()
@@ -96,7 +98,9 @@ class OrbitFeature(QObject):
                 background-color: white;
             }
         """)
+        # Secondary is user-selectable from all channels except the primary
         self.secondary_combo.currentIndexChanged.connect(self.on_secondary_combo_changed)
+        self.secondary_combo.setEnabled(True)
 
         combo_layout = QHBoxLayout()
         combo_layout.addWidget(primary_label)
@@ -175,8 +179,9 @@ class OrbitFeature(QObject):
             self.channel_data = [[] for _ in range(self.channel_count)]
             self.primary_combo.clear()
             self.secondary_combo.clear()
+            # Populate primary with all channels (display only; disabled for manual change)
             self.primary_combo.addItems(self.available_channels)
-            self.secondary_combo.addItems(self.available_channels)
+            # Secondary will be populated with all channels except primary below
             if self.selected_channel and self.selected_channel in self.available_channels:
                 idx = self.available_channels.index(self.selected_channel)
                 self.primary_channel = idx
@@ -186,7 +191,8 @@ class OrbitFeature(QObject):
                 self.secondary_channel = 1 if self.channel_count > 1 else 0
                 self.selected_channel = self.available_channels[self.primary_channel] if self.available_channels else None
             self.primary_combo.setCurrentIndex(self.primary_channel)
-            self.secondary_combo.setCurrentIndex(self.secondary_channel)
+            # Populate secondary with all channels except primary
+            self.refresh_secondary_combo()
             if self.console:
                 self.console.append_to_console(
                     f"OrbitFeature: Loaded {self.channel_count} channels. "
@@ -233,6 +239,9 @@ class OrbitFeature(QObject):
             if 0 <= index < self.channel_count:
                 self.primary_channel = index
                 self.selected_channel = self.available_channels[index]
+                # Default secondary to next-of-primary (wrap), then refresh choices (exclude primary)
+                self.secondary_channel = (index + 1) % self.channel_count if self.channel_count > 1 else index
+                self.refresh_secondary_combo()
                 self.primary_channel_changed.emit(index)
                 self.update_plot_labels()
                 self.update_plots()
@@ -246,23 +255,59 @@ class OrbitFeature(QObject):
         finally:
             self.is_updating = False
 
+    def refresh_secondary_combo(self):
+        """Populate secondary combo with all channels except the primary; keep selection if valid."""
+        try:
+            self.secondary_combo.blockSignals(True)
+            self.secondary_combo.clear()
+            if self.channel_count and self.channel_count > 0 and 0 <= self.primary_channel < self.channel_count:
+                # Add all channels except the primary; store actual channel index in userData
+                for idx, label in enumerate(self.available_channels):
+                    if idx == self.primary_channel:
+                        continue
+                    self.secondary_combo.addItem(label, idx)
+                # Choose selection: keep current if still valid and not primary; else next channel
+                desired_idx = self.secondary_channel
+                if desired_idx == self.primary_channel or desired_idx is None or desired_idx >= self.channel_count:
+                    desired_idx = (self.primary_channel + 1) % self.channel_count if self.channel_count > 1 else self.primary_channel
+                    if desired_idx == self.primary_channel and self.channel_count > 1:
+                        desired_idx = (self.primary_channel + 1) % self.channel_count
+                # Find the combo row whose itemData matches desired_idx
+                set_row = 0
+                for row in range(self.secondary_combo.count()):
+                    if self.secondary_combo.itemData(row) == desired_idx:
+                        set_row = row
+                        break
+                self.secondary_combo.setCurrentIndex(set_row)
+                # Update internal secondary_channel to desired_idx
+                self.secondary_channel = desired_idx if self.secondary_combo.count() > 0 else self.primary_channel
+            self.secondary_combo.blockSignals(False)
+            self.secondary_combo.setEnabled(True)
+        except Exception:
+            try:
+                self.secondary_combo.blockSignals(False)
+            except Exception:
+                pass
+
     def on_secondary_combo_changed(self, index):
         if self.is_updating:
             return
         self.is_updating = True
         try:
-            if 0 <= index < self.channel_count:
-                self.secondary_channel = index
-                self.secondary_channel_changed.emit(index)
-                self.update_plot_labels()
-                self.update_plots()
-                if self.console:
-                    self.console.append_to_console(
-                        f"OrbitFeature: Selected secondary channel: {self.available_channels[index]} (index {index})"
-                    )
-            else:
-                if self.console:
-                    self.console.append_to_console(f"OrbitFeature: Invalid secondary channel index {index}")
+            # Secondary chosen by user from list that excludes primary; map to actual channel index via itemData
+            actual_idx = self.secondary_combo.itemData(index)
+            if actual_idx is None:
+                # Fallback: derive next-of-primary
+                actual_idx = (self.primary_channel + 1) % self.channel_count if self.channel_count > 1 else self.primary_channel
+            self.secondary_channel = actual_idx
+            self.secondary_channel_changed.emit(actual_idx)
+            self.update_plot_labels()
+            self.update_plots()
+            if self.console:
+                label = self.available_channels[actual_idx] if 0 <= actual_idx < len(self.available_channels) else str(actual_idx)
+                self.console.append_to_console(
+                    f"OrbitFeature: Secondary channel set to: {label} (index {actual_idx})"
+                )
         finally:
             self.is_updating = False
 
@@ -506,9 +551,10 @@ class OrbitFeature(QObject):
             if channel_idx is not None and channel_idx < self.channel_count:
                 self.selected_channel = channel_name
                 self.primary_channel = channel_idx
-                self.secondary_channel = (channel_idx + 1) % self.channel_count if self.channel_count > 1 else channel_idx
                 self.primary_combo.setCurrentIndex(self.primary_channel)
-                self.secondary_combo.setCurrentIndex(self.secondary_channel)
+                # Default secondary to next-of-primary (wrap), then refresh choices (exclude primary)
+                self.secondary_channel = (channel_idx + 1) % self.channel_count if self.channel_count > 1 else channel_idx
+                self.refresh_secondary_combo()
                 self.primary_channel_changed.emit(self.primary_channel)
                 self.secondary_channel_changed.emit(self.secondary_channel)
                 self.update_plot_labels()

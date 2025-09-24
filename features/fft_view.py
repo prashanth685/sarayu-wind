@@ -9,8 +9,29 @@ import logging
 from scipy.fft import fft
 from scipy.signal import get_window
 from datetime import datetime
+import numbers
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+class LeftAxisItem(pg.AxisItem):
+    def __init__(self, *args, decimals=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.decimals = decimals
+
+    def tickStrings(self, values, scale, spacing):
+        labels = []
+        for v in values:
+            try:
+                if isinstance(v, numbers.Number):
+                    if self.decimals is not None:
+                        labels.append(f"{v:.{self.decimals}f}")
+                    else:
+                        labels.append(f"{v}")
+                else:
+                    labels.append("")
+            except Exception:
+                labels.append("")
+        return labels
 
 class FFTSettings:
     def __init__(self, project_id):
@@ -62,6 +83,7 @@ class FFTViewFeature:
         self.channel_properties = {}
         self.channel_names = []
         self._y_unit_label = None
+        self._y_axis_decimals = None
 
         self.settings_panel = None
         self.settings_button = None
@@ -300,6 +322,24 @@ class FFTViewFeature:
         self.magnitude_plot_widget.showGrid(x=True, y=True)
         self.magnitude_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
         self.magnitude_plot_widget.enableAutoRange('y', True)
+        # Set custom left axis with initial decimals (fallback 1)
+        try:
+            self.left_axis = LeftAxisItem(orientation='left', decimals=1)
+            self.magnitude_plot_widget.setAxisItems({'left': self.left_axis})
+        except Exception:
+            self.left_axis = None
+        # Improve axis readability similar to Time View
+        try:
+            tick_font = pg.Qt.QtGui.QFont()
+            tick_font.setPointSize(8)
+            tick_font.setBold(True)
+            for ax_name in ('bottom', 'left'):
+                ax = self.magnitude_plot_widget.getAxis(ax_name)
+                ax.setStyle(tickFont=tick_font, tickTextOffset=6)
+                ax.setPen(pg.mkPen(color='#000000', width=1))
+                ax.setTextPen(pg.mkPen(color='#000000'))
+        except Exception:
+            pass
         self.magnitude_plot_item = self.magnitude_plot_widget.plot(pen=pg.mkPen(color='#4a90e2', width=2))
         plot_layout.addWidget(self.magnitude_plot_widget)
 
@@ -524,6 +564,52 @@ class FFTViewFeature:
     def get_widget(self):
         return self.widget
 
+    def _update_left_axis_decimals(self, unit: str, max_val: float):
+        """Choose sensible decimals for the left axis based on unit and data magnitude."""
+        try:
+            if self.left_axis is None:
+                return
+            u = (unit or '').lower()
+            v = abs(float(max_val)) if max_val is not None else 0.0
+            # Default decimals by unit (baseline similar to Time View)
+            dec = None
+            if u == 'mm':
+                dec = 0
+            elif u == 'mil':
+                dec = 1
+            elif u == 'um':
+                dec = 0
+            elif u == 'v':
+                dec = 3
+            else:
+                dec = 3
+            # Refine based on scale so small amplitudes still visible
+            if v > 0:
+                if v < 1e-6:
+                    dec = max(dec, 9)
+                elif v < 1e-5:
+                    dec = max(dec, 8)
+                elif v < 1e-4:
+                    dec = max(dec, 7)
+                elif v < 1e-3:
+                    dec = max(dec, 6)
+                elif v < 1e-2:
+                    dec = max(dec, 5)
+                elif v < 1e-1:
+                    dec = max(dec, 4)
+            # Apply and refresh axis
+            if self.left_axis.decimals != dec:
+                self.left_axis.decimals = dec
+                try:
+                    self.left_axis.picture = None
+                    self.left_axis.update()
+                    self.magnitude_plot_widget.getPlotItem().update()
+                    self.magnitude_plot_widget.repaint()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
     def on_data_received(self, tag_name, model_name, values, sample_rate, frame_index):
         if self.model_name != model_name or self.channel_index is None:
             if self.console:
@@ -575,11 +661,11 @@ class FFTViewFeature:
                 base_value = volts
             unit = (props.get("unit", "mil") or "mil").lower()
             if unit == "mil":
-                calibrated = base_value / 25.4
+                calibrated = base_value 
             elif unit == "um":
                 calibrated = base_value
             elif unit == "mm":
-                calibrated = base_value / 1000.0
+                calibrated = base_value 
             else:
                 calibrated = base_value
 
@@ -593,6 +679,26 @@ class FFTViewFeature:
             if self._y_unit_label != unit:
                 self._y_unit_label = unit
                 self.magnitude_plot_widget.setLabel('left', f'Amplitude ({unit})', color='#000000')
+                # Update tick decimals to mirror Time View behavior
+                new_dec = None
+                if unit == 'mm':
+                    new_dec = 3
+                elif unit == 'mil':
+                    new_dec = 3
+                elif unit == 'um':
+                    new_dec = 0
+                elif unit == 'v':
+                    new_dec = 3
+                if self.left_axis is not None:
+                    self.left_axis.decimals = new_dec
+                    try:
+                        # Force axis refresh
+                        self.left_axis.picture = None
+                        self.left_axis.update()
+                        self.magnitude_plot_widget.getPlotItem().update()
+                        self.magnitude_plot_widget.repaint()
+                    except Exception:
+                        pass
 
             if self.is_saving and self.current_filename:
                 self.save_data_to_database(tag_name, values, sample_rate, frame_index)
@@ -707,6 +813,14 @@ class FFTViewFeature:
                 filtered_magnitudes = filtered_magnitudes[indices]
                 filtered_phases = filtered_phases[indices]
 
+            # Update axis label/decimals based on current unit and magnitude
+            try:
+                unit_for_axis = self._y_unit_label or 'um'
+                max_mag = float(np.nanmax(filtered_magnitudes)) if filtered_magnitudes.size > 0 else 0.0
+                self._update_left_axis_decimals(unit_for_axis, max_mag)
+            except Exception:
+                pass
+
             self.magnitude_plot_item.setData(filtered_frequencies, filtered_magnitudes)
             self.phase_plot_item.setData(filtered_frequencies, filtered_phases)
             self.magnitude_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
@@ -798,6 +912,25 @@ class FFTViewFeature:
             if self._y_unit_label != unit_sf:
                 self._y_unit_label = unit_sf
                 self.magnitude_plot_widget.setLabel('left', f'Amplitude ({unit_sf})', color='#000000')
+                # Update tick decimals based on unit
+                new_dec = None
+                if unit_sf == 'mm':
+                    new_dec = 3
+                elif unit_sf == 'mil':
+                    new_dec = 3
+                elif unit_sf == 'um':
+                    new_dec = 0
+                elif unit_sf == 'v':
+                    new_dec = 3
+                if self.left_axis is not None:
+                    self.left_axis.decimals = new_dec
+                    try:
+                        self.left_axis.picture = None
+                        self.left_axis.update()
+                        self.magnitude_plot_widget.getPlotItem().update()
+                        self.magnitude_plot_widget.repaint()
+                    except Exception:
+                        pass
 
             # Buffer and plot
             self.sample_rate = Fs
