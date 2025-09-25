@@ -3,6 +3,7 @@ import logging
 import os
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import Qt, QCoreApplication
+from PyQt5.QtGui import QIcon
 import pyqtgraph as pg
 from auth import AuthWindow
 
@@ -36,6 +37,19 @@ if __name__ == '__main__':
         pass
 
     app = QApplication(sys.argv)
+    # Set application icon (affects taskbar and windows)
+    try:
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        candidates = [
+            os.path.join(base_dir, 'logo.ico'),
+            os.path.join(base_dir, 'logo.png'),
+            os.path.join(base_dir, 'icons', 'placeholder.png'),
+        ]
+        icon_path = next((p for p in candidates if os.path.exists(p)), None)
+        if icon_path:
+            app.setWindowIcon(QIcon(icon_path))
+    except Exception:
+        pass
     auth_window = AuthWindow()
     auth_window.show()
     sys.exit(app.exec_())

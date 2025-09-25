@@ -1,5 +1,5 @@
 import sys
-from PyQt5.QtGui import QPixmap, QColor
+from PyQt5.QtGui import QPixmap, QColor, QIcon
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QLabel, QLineEdit,
                              QPushButton, QMessageBox, QFormLayout, QApplication,
                              QGraphicsDropShadowEffect)
@@ -35,6 +35,19 @@ class AuthWindow(QWidget):
 
     def initUI(self):
         self.setWindowTitle('Sarayu Infotech Solutions Pvt. Ltd.')
+        # Set window icon using robust path resolution
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            candidates = [
+                os.path.join(base_dir, 'logo.ico'),
+                os.path.join(base_dir, 'logo.png'),
+                os.path.join(base_dir, 'icons', 'placeholder.png'),
+            ]
+            icon_path = next((p for p in candidates if os.path.exists(p)), None)
+            if icon_path:
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception:
+            pass
         main_layout = QVBoxLayout()
         main_layout.setAlignment(Qt.AlignCenter)
         main_layout.setSpacing(10)
@@ -42,7 +55,15 @@ class AuthWindow(QWidget):
 
         # Logo
         logo_label = QLabel(self)
-        logo_path = "logo.png" if os.path.exists("logo.png") else "icons/placeholder.png"
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            logo_candidates = [
+                os.path.join(base_dir, 'logo.png'),
+                os.path.join(base_dir, 'icons', 'placeholder.png'),
+            ]
+            logo_path = next((p for p in logo_candidates if os.path.exists(p)), logo_candidates[-1])
+        except Exception:
+            logo_path = "icons/placeholder.png"
         pixmap = QPixmap(logo_path)
         if pixmap.isNull():
             print(f"Warning: Could not load logo at {logo_path}")
@@ -83,7 +104,7 @@ class AuthWindow(QWidget):
         email_label = QLabel('Email')
         email_label.setStyleSheet("font-size: 18px; color: #333; font-weight: bold;")
         self.email_input = self.create_input_field('Enter your email')
-        self.email_input.setText('raj@gmail.com')
+        self.email_input.setText('')
         self.email_input.setStyleSheet('font-size:16px;font:bold')
         self.form_fields.addRow(email_label, self.email_input)
 
@@ -91,7 +112,7 @@ class AuthWindow(QWidget):
         password_label = QLabel('Password')
         password_label.setStyleSheet("font-size: 18px; color: #333; font-weight: bold;")
         self.password_input = self.create_input_field('Enter your password')
-        self.password_input.setText('12345678')
+        self.password_input.setText('')
         self.password_input.setStyleSheet('font-size:16px;font:bold')
         self.password_input.setEchoMode(QLineEdit.Password)
         self.form_fields.addRow(password_label, self.password_input)

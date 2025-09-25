@@ -3,6 +3,7 @@ import gc
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSplitter, QSizePolicy, QApplication, QMessageBox
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject
 from PyQt5.QtGui import QIcon, QColor
+import os
 import logging
 from dashboard.components.file_bar import FileBar
 from dashboard.components.tool_bar import ToolBar
@@ -95,6 +96,21 @@ class DashboardWindow(QWidget):
     def initUI(self):
         self.setWindowTitle('Sarayu Desktop Application')
         self.setWindowState(Qt.WindowMaximized)
+        # Set window icon using robust path resolution
+        try:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # __file__ here is in dashboard/, go one level up to project root
+            root_dir = os.path.dirname(base_dir)
+            candidates = [
+                os.path.join(root_dir, 'logo.ico'),
+                os.path.join(root_dir, 'logo.png'),
+                os.path.join(root_dir, 'icons', 'placeholder.png'),
+            ]
+            icon_path = next((p for p in candidates if os.path.exists(p)), None)
+            if icon_path:
+                self.setWindowIcon(QIcon(icon_path))
+        except Exception:
+            pass
         app = QApplication.instance()
         app.setStyleSheet("""
         QInputDialog, QMessageBox {
