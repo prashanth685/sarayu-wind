@@ -1,11 +1,12 @@
 import numpy as np
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QScrollArea, QPushButton, QCheckBox, QComboBox, QHBoxLayout, QGridLayout, QLabel, QSizePolicy
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QScrollArea, QPushButton, QCheckBox, QComboBox, QHBoxLayout, QGridLayout, QLabel, QSizePolicy, QHeaderView
 from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer
-from PyQt5.QtGui import QIcon
+from PyQt5.QtGui import QIcon, QFont
 import pyqtgraph as pg
 from datetime import datetime
 import scipy.signal as signal
 import logging
+import sip
 
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -124,6 +125,7 @@ class TabularViewFeature:
         self.table = None
         self.plot_widgets = []
         self.plots = []
+        self.plots_enabled = False  # Tabular view: disable graph plotting per user request
         self.tag_name = ""
         self.scroll_content = None
         self.scroll_layout = None
@@ -172,6 +174,7 @@ class TabularViewFeature:
         top_layout.addWidget(self.settings_button)
         layout.addLayout(top_layout)
 
+        # Right sidebar settings panel (hidden by default)
         self.settings_panel = QWidget()
         self.settings_panel.setStyleSheet("""
             QWidget {
@@ -180,14 +183,26 @@ class TabularViewFeature:
                 border-radius: 4px;
                 padding: 10px;
             }
+            QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
+        self.settings_panel.setFixedWidth(300)
         settings_layout = QGridLayout()
+        settings_layout.setSpacing(10)
+        # Make columns proportionally flexible
+        settings_layout.setColumnStretch(0, 1)
+        settings_layout.setColumnStretch(1, 1)
+        settings_layout.setColumnStretch(2, 1)
         self.settings_panel.setLayout(settings_layout)
+
+        title = QLabel("Tabular View Settings")
+        title.setObjectName("settingsTitle")
+        settings_layout.addWidget(title, 0, 0, 1, 3)
 
         bandpass_label = QLabel("Bandpass Selection:")
         bandpass_label.setStyleSheet("font-size: 14px;")
-        settings_layout.addWidget(bandpass_label, 0, 0)
+        # Place bandpass controls on the first row below the title
+        settings_layout.addWidget(bandpass_label, 1, 0)
         self.bandpass_combo = QComboBox()
         self.bandpass_combo.addItems(["None", "50-200 Hz", "100-300 Hz"])
         self.bandpass_combo.setStyleSheet("""
@@ -199,16 +214,28 @@ class TabularViewFeature:
                 min-width: 100px;
             }
         """)
-        settings_layout.addWidget(self.bandpass_combo, 0, 1)
+        settings_layout.addWidget(self.bandpass_combo, 1, 1, 1, 2)
 
         headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
         self.checkbox_dict = {}
-        for i, header in enumerate(headers):
+        # Create a scrollable area for many checkboxes to avoid overflow
+        opts_scroll = QScrollArea()
+        opts_scroll.setWidgetResizable(True)
+        opts_scroll.setStyleSheet("QScrollArea { border: none; }")
+        opts_container = QWidget()
+        opts_layout = QVBoxLayout(opts_container)
+        opts_layout.setContentsMargins(0, 0, 0, 0)
+        opts_layout.setSpacing(6)
+        for header in headers:
             cb = QCheckBox(header)
             cb.setChecked(True)
             cb.setStyleSheet("font-size: 14px;")
             self.checkbox_dict[header] = cb
-            settings_layout.addWidget(cb, (i // 3) + 1, i % 3)
+            opts_layout.addWidget(cb)
+        opts_layout.addStretch()
+        opts_scroll.setWidget(opts_container)
+        # Place the options scroll area in row 2 spanning full width of the panel
+        settings_layout.addWidget(opts_scroll, 2, 0, 1, 3)
 
         self.save_settings_button = QPushButton("Save")
         self.save_settings_button.setStyleSheet("""
@@ -250,31 +277,78 @@ class TabularViewFeature:
         """)
         self.close_settings_button.clicked.connect(self.close_settings)
 
-        settings_layout.addWidget(self.save_settings_button, len(headers) // 3 + 1, 0)
-        settings_layout.addWidget(self.close_settings_button, len(headers) // 3 + 1, 1)
-        settings_layout.addWidget(QLabel(""), len(headers) // 3 + 1, 2)
-        layout.addWidget(self.settings_panel)
+        # Push buttons to the bottom below the scroll area
+        buttons_row = 3
+        settings_layout.setRowStretch(2, 1)  # make the scroll area take remaining space
+        settings_layout.addWidget(self.save_settings_button, buttons_row, 0, alignment=Qt.AlignRight)
+        settings_layout.addWidget(self.close_settings_button, buttons_row, 1, alignment=Qt.AlignLeft)
+        settings_layout.addWidget(QLabel(""), buttons_row, 2)
 
+        # Left content: table + plots scroll area
         self.table = QTableWidget()
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
-        # Responsive table sizing
-        self.table.setMinimumHeight(160)
-        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
-        layout.addWidget(self.table)
+        # Table styling and behavior
+        self.table.setAlternatingRowColors(True)
+        self.table.setShowGrid(True)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                background: #ffffff;
+                alternate-background-color: #f7f9fc; /* light color for alternate rows */
+                gridline-color: #e0e6ef;
+            }
+            QTableWidget::item {
+                padding: 6px 10px; /* increase padding */
+            }
+            QHeaderView::section {
+                background-color: #2196F3; /* blue */
+                color: #ffffff; /* white font */
+                padding: 8px 10px;
+                border: 1px solid #1976d2; /* darker blue border */
+                font-weight: 700;
+                font-size: 15px;
+            }
+        """)
+        # Remove internal scrollbars; we will auto-adjust height
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Header resize behavior
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.verticalHeader().setDefaultSectionSize(32)  # increase row height
+        # Size policy: expand horizontally, fixed vertically (we control height)
+        self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        # Do not add table directly to main layout; add to left container later
 
         self.table_initialized = True
         if self.console:
             self.console.append_to_console(f"Initialized table with {self.num_channels} rows for channels: {self.channel_names}")
 
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
+        self.scroll_area = QScrollArea()
+        self.scroll_area.setWidgetResizable(True)
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
-        scroll_area.setWidget(self.scroll_content)
-        layout.addWidget(scroll_area)
+        self.scroll_area.setWidget(self.scroll_content)
+        # Disable plots in Tabular View per request
+        self.scroll_area.setVisible(False)
 
-        self.initialize_plots()
+        # Compose left container
+        left_container = QWidget()
+        left_layout = QVBoxLayout(left_container)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
+        left_layout.addWidget(self.table)
+        left_layout.addWidget(self.scroll_area)
+
+        # Content area: left content + right settings panel
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(0, 0, 0, 0)
+        content_layout.setSpacing(8)
+        content_layout.addWidget(left_container, 1)
+        content_layout.addWidget(self.settings_panel)
+        layout.addLayout(content_layout)
+
+        # Do not initialize plots (disabled for Tabular View)
         if self.console:
             self.console.append_to_console(f"Initialized UI with channel: {self.channel_names[self.selected_channel]}")
 
@@ -314,6 +388,10 @@ class TabularViewFeature:
             self.initialize_plots()
 
     def initialize_plots(self):
+        if not self.plots_enabled:
+            # Plots are disabled in Tabular View
+            self.plot_initialized = False
+            return
         for widget in self.plot_widgets:
             self.scroll_layout.removeWidget(widget)
             widget.deleteLater()
@@ -369,6 +447,9 @@ class TabularViewFeature:
         if not self.table or not self.table_initialized:
             self.log_and_set_status("Table not initialized, skipping update_table_defaults")
             return
+        if sip.isdeleted(self.table):
+            self.log_and_set_status("Table widget deleted, skipping update_table_defaults")
+            return
         headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
         self.table.setRowCount(self.num_channels)
         for row in range(self.num_channels):
@@ -386,11 +467,37 @@ class TabularViewFeature:
             for col, header in enumerate(headers):
                 item = QTableWidgetItem(default_data[header])
                 item.setTextAlignment(Qt.AlignCenter)
+                # Make table values bold
+                bold_font = QFont()
+                bold_font.setBold(True)
+                item.setFont(bold_font)
                 self.table.setItem(row, col, item)
-        self.table.setFixedHeight(200)
+        # Ensure rows use the new padding and height
+        self.table.resizeRowsToContents()
+        self.adjust_table_height()
         self.update_column_visibility()
         if self.console:
             self.console.append_to_console(f"Updated table defaults with units for {self.num_channels} channels: {self.channel_names}")
+
+    def adjust_table_height(self):
+        """Auto-adjust the table's fixed height to fit all rows without an internal scrollbar."""
+        if not self.table:
+            return
+        if sip.isdeleted(self.table):
+            return
+        header_height = self.table.horizontalHeader().height() if self.table.horizontalHeader() else 0
+        # Sum heights of all rows
+        total_rows_height = 0
+        for r in range(self.table.rowCount()):
+            total_rows_height += self.table.rowHeight(r)
+        # Add frame width and a small margin
+        frame = self.table.frameWidth() * 2
+        margin = 6
+        new_height = header_height + total_rows_height + frame + margin
+        # Put a sensible minimum in case there are no rows yet
+        if new_height < header_height + 32 + frame + margin:
+            new_height = header_height + 32 + frame + margin
+        self.table.setFixedHeight(new_height)
 
     def load_settings_from_database(self):
         try:
@@ -469,9 +576,12 @@ class TabularViewFeature:
 
     def toggle_settings(self):
         self.settings_panel.setVisible(not self.settings_panel.isVisible())
+        # Hide the button when panel is visible, similar to Time/FFT views
+        self.settings_button.setVisible(not self.settings_panel.isVisible())
 
     def close_settings(self):
         self.settings_panel.setVisible(False)
+        self.settings_button.setVisible(True)
 
     def update_column_visibility(self):
         headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
@@ -526,15 +636,15 @@ class TabularViewFeature:
             volts = (np.array(values, dtype=float) - self.off_set) * self.scaling_factor
             unit = (props.get("Unit", "mil") or "mil").lower()
             if unit == "v":
-                calibrated = volts
+                calibrated = (volts * props["CorrectionValue"] * props["Gain"]) / props["Sensitivity"]
             elif unit == "mm":
-                calibrated = volts / 7.874
+                calibrated = (volts * (props["CorrectionValue"] * props["Gain"])) / props["Sensitivity"]
             elif unit == "um":
-                calibrated = volts / 0.007874
+                calibrated = (volts * (props["CorrectionValue"] * props["Gain"])) / props["Sensitivity"]
             elif unit == "mil":
-                calibrated = volts / 0.2
+                calibrated = (volts * (props["CorrectionValue"] * props["Gain"])) / props["Sensitivity"]
             else:
-                calibrated = volts * (props["CorrectionValue"] * props["Gain"]) * props["Sensitivity"]
+                calibrated = volts 
             logging.debug(f"Processed data for {channel_name} with unit {unit}, shape: {calibrated.shape}")
             return calibrated
         except Exception as ex:
@@ -858,20 +968,31 @@ class TabularViewFeature:
         if not self.table or not self.table_initialized:
             self.log_and_set_status("Table not initialized, skipping update_table_row")
             return
+        if sip.isdeleted(self.table):
+            self.log_and_set_status("Table widget deleted, skipping update_table_row")
+            return
         headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
         try:
             for col, header in enumerate(headers):
                 item = QTableWidgetItem(channel_data[header])
                 item.setTextAlignment(Qt.AlignCenter)
+                # Make table values bold
+                bold_font = QFont()
+                bold_font.setBold(True)
+                item.setFont(bold_font)
                 self.table.setItem(row, col, item)
             logging.debug(f"Updated table row {row} with unit: {channel_data['Unit']}")
+            # After updating a row, ensure sizing stays correct
+            self.table.resizeRowToContents(row)
         except Exception as ex:
             self.log_and_set_status(f"Error updating table row {row}: {str(ex)}")
 
     def update_display(self):
         if not self.table or not self.table_initialized:
             self.log_and_set_status("Table not initialized, skipping update_display")
-            self.initialize_plots()
+            return
+        if sip.isdeleted(self.table):
+            self.log_and_set_status("Table widget deleted, skipping update_display")
             return
         try:
             self.process_buffered_data()  # Process any buffered data
@@ -896,13 +1017,18 @@ class TabularViewFeature:
                     "NXPhase": f"{np.mean(self.three_x_phases[ch]):.2f}" if self.three_x_phases[ch] else "0.00"
                 }
                 self.update_table_row(ch, channel_data)
-            QTimer.singleShot(0, self.update_plots)
+            # After bulk updates, adjust rows and table height
+            self.table.resizeRowsToContents()
+            self.adjust_table_height()
+            # Do not update plots (disabled)
             if self.console:
                 self.console.append_to_console(f"Updated display for all {self.num_channels} channels")
         except Exception as ex:
             self.log_and_set_status(f"Error in update_display: {str(ex)}")
 
     def update_plots(self):
+        if not self.plots_enabled:
+            return
         if not self.plot_initialized or not self.plot_widgets or not self.plots:
             self.initialize_plots()
             return
