@@ -16,6 +16,8 @@ class MQTTHandler(QObject):
     data_received = pyqtSignal(str, str, str, object, list, int, int)
     connection_status = pyqtSignal(str)
     save_status = pyqtSignal(str)
+    # model_name, tag_name, gap_voltages (list of floats)
+    gap_values_received = pyqtSignal(str, str, list)
 
     def __init__(self, db, project_name, broker="192.168.1.231", port=1883):
         super().__init__()
@@ -243,6 +245,16 @@ class MQTTHandler(QObject):
                         total_channels = main_channels + tacho_channels_count
                         total_values = values[100:]
                         samples_per_channel = (len(total_values) // total_channels) if total_values and total_channels > 0 else 0
+
+                        # Extract gap voltages from header[15]..header[25] and scale by 1/100
+                        try:
+                            if len(header) >= 26:
+                                gaps = [float(h) / 100.0 for h in header[15:26]]
+                                # Emit asynchronously for interested features (e.g., Tabular View)
+                                self.gap_values_received.emit(model_name, tag_name, gaps)
+                        except Exception:
+                            # Do not fail processing on gap extraction issues
+                            pass
 
                         if main_channels <= 0 or sample_rate <= 0 or tacho_channels_count < 0 or samples_per_channel <= 0:
                             logging.error(f"Invalid header: main_channels={main_channels}, sample_rate={sample_rate}, "

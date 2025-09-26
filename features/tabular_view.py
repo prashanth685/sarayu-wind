@@ -141,6 +141,8 @@ class TabularViewFeature:
         # Calibration constants to match Time View
         self.scaling_factor = 3.3 / 65535.0
         self.off_set = 32768
+        # Latest gap voltages from header[15..25] scaled by 1/100
+        self.gap_voltages = []
         self.initUI()
         self.initialize_thread()
 
@@ -853,7 +855,7 @@ class TabularViewFeature:
                     "Unit": unit,
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{self.average_frequency[ch] * 60.0:.2f}" if self.average_frequency[ch] > 0 else "0.00",
-                    "Gap": "0.00",
+                    "Gap": (f"{float(self.gap_voltages[ch]):.2f}" if isinstance(self.gap_voltages, (list, tuple)) and ch < len(self.gap_voltages) and self.gap_voltages[ch] is not None else "0.00"),
                     "Direct": self.format_direct_bandpass_value(avg_direct, unit),
                     "Bandpass": self.format_direct_bandpass_value(avg_bandpass, unit),
                     "1xA": self.format_direct_value([avg_1xa], unit),
@@ -1038,7 +1040,7 @@ class TabularViewFeature:
                     "Unit": unit,
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{self.average_frequency[ch] * 60.0:.2f}" if self.average_frequency[ch] > 0 else "0.00",
-                    "Gap": "0.00",
+                    "Gap": (f"{float(self.gap_voltages[ch]):.2f}" if isinstance(self.gap_voltages, (list, tuple)) and ch < len(self.gap_voltages) and self.gap_voltages[ch] is not None else "0.00"),
                     "Direct": self.format_direct_bandpass_value(np.mean(direct_values) if direct_values else 0.0, unit),
                     "Bandpass": self.format_direct_bandpass_value(self.band_pass_peak_to_peak[ch], unit),
                     "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
@@ -1175,3 +1177,15 @@ class TabularViewFeature:
             self.log_and_set_status("Widget not initialized, recreating UI")
             self.initUI()
         return self.widget
+
+    def set_gap_voltages(self, gaps):
+        """Update the latest gap voltages read from MQTT header[15..25] (already scaled by 1/100)."""
+        try:
+            if not isinstance(gaps, (list, tuple)):
+                return
+            # Store as floats; may be longer than channel count; we index by channel index when using
+            self.gap_voltages = [float(x) if x is not None else None for x in gaps]
+            # Trigger a non-blocking UI refresh so Gap column updates
+            QTimer.singleShot(0, self.update_display)
+        except Exception as ex:
+            self.log_and_set_status(f"Error setting gap voltages: {str(ex)}")

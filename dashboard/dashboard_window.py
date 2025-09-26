@@ -563,6 +563,11 @@ class DashboardWindow(QWidget):
                 self.mqtt_handler.data_received.connect(self.on_data_received)
                 self.mqtt_handler.connection_status.connect(self.on_mqtt_status)
                 self.mqtt_handler.save_status.connect(self.console.append_to_console)
+                # Receive gap voltages extracted from binary payload headers
+                try:
+                    self.mqtt_handler.gap_values_received.connect(self.on_gap_values)
+                except Exception:
+                    pass
                 self.mqtt_handler.start()
                 logging.info(f"MQTT setup initiated for project: {self.current_project}")
                 self.console.append_to_console(f"MQTT setup initiated for project: {self.current_project}")
@@ -583,6 +588,10 @@ class DashboardWindow(QWidget):
                 self.mqtt_handler.data_received.disconnect()
                 self.mqtt_handler.connection_status.disconnect()
                 self.mqtt_handler.save_status.disconnect()
+                try:
+                    self.mqtt_handler.gap_values_received.disconnect()
+                except Exception:
+                    pass
                 self.mqtt_handler.stop()
                 self.mqtt_handler.deleteLater()
                 logging.info("Previous MQTT handler stopped")
@@ -702,6 +711,19 @@ class DashboardWindow(QWidget):
         except Exception as e:
             logging.error(f"Error updating {feature_name} for {model_name}/{channel or 'all channels'}: {str(e)}")
             self.console.append_to_console(f"Error updating {feature_name}: {str(e)}")
+
+    def on_gap_values(self, model_name: str, tag_name: str, gaps: list):
+        """Receive gap voltages for a model and push them to all Tabular View instances of that model."""
+        try:
+            for key, instance in self.feature_instances.items():
+                feat, mdl, ch, _ = key
+                if feat == "Tabular View" and mdl == model_name and hasattr(instance, "set_gap_voltages"):
+                    try:
+                        instance.set_gap_voltages(gaps)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"Error routing gap values to Tabular View: {e}")
 
     def load_project_features(self):
         # TreeView exposes update_project to (re)load models/channels for a project
