@@ -77,7 +77,8 @@ class TabularViewWorker(QObject):
                 }
             tag_name = model.get("tagName", "")
             logging.debug(f"Worker initialized: {num_channels} channels, names: {channel_names}")
-            self.initialized.emit(channel_names, num_channels, tag_name, channel_properties, project_id)
+            # Emit project_id as string to match signal signature and avoid ObjectId type errors
+            self.initialized.emit(channel_names, num_channels, tag_name, channel_properties, str(project_id))
         except Exception as ex:
             self.error.emit(f"Error initializing TabularView: {str(ex)}")
             self.initialized.emit(["Channel 1"], 1, "", {}, None)
@@ -150,8 +151,13 @@ class TabularViewFeature:
         layout = QVBoxLayout()
         self.widget.setLayout(layout)
 
+        # Top bar: header (center) and settings button (right) on the same line
         top_layout = QHBoxLayout()
-        top_layout.addStretch()
+        header = QLabel(f"TABULAR VIEW FOR {self.project_name.upper()}")
+        header.setStyleSheet("color: black; font-size: 26px; font-weight: bold; padding: 8px;")
+        top_layout.addStretch()  # left spacer
+        top_layout.addWidget(header, alignment=Qt.AlignCenter)
+        top_layout.addStretch()  # right spacer to keep header centered
         self.settings_button = QPushButton("⚙️ Settings")
         self.settings_button.setStyleSheet("""
             QPushButton {
@@ -664,6 +670,32 @@ class TabularViewFeature:
         else:  # mil or others
             return f"{avg:.2f}"
 
+    def format_direct_bandpass_value(self, value, unit):
+        """Format Direct and Bandpass values with unit-specific decimals.
+        Rules:
+        - mil: 1 decimal
+        - mm: 3 decimals
+        - um: 0 decimals
+        - v: 3 decimals
+        """
+        try:
+            if value is None:
+                return "0.0"
+            unit = (unit or "mil").lower()
+            val = float(value)
+            if unit == "mil":
+                return f"{val:.1f}"
+            elif unit == "mm":
+                return f"{val:.3f}"
+            elif unit == "um":
+                return f"{val:.0f}"
+            elif unit == "v":
+                return f"{val:.3f}"
+            # default fallback
+            return f"{val:.2f}"
+        except Exception:
+            return "0.0"
+
     def on_data_received(self, tag_name, model_name, values, sample_rate, frame_index):
         if not values or len(values) < 1:
             self.log_and_set_status(f"Insufficient data received for frame {frame_index}: {len(values)} channels")
@@ -822,8 +854,8 @@ class TabularViewFeature:
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{self.average_frequency[ch] * 60.0:.2f}" if self.average_frequency[ch] > 0 else "0.00",
                     "Gap": "0.00",
-                    "Direct": self.format_direct_value([avg_direct], unit),
-                    "Bandpass": self.format_direct_value([avg_bandpass], unit),
+                    "Direct": self.format_direct_bandpass_value(avg_direct, unit),
+                    "Bandpass": self.format_direct_bandpass_value(avg_bandpass, unit),
                     "1xA": self.format_direct_value([avg_1xa], unit),
                     "1xP": f"{avg_1xp:.2f}",
                     "2xA": self.format_direct_value([avg_2xa], unit),
@@ -1007,8 +1039,8 @@ class TabularViewFeature:
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{self.average_frequency[ch] * 60.0:.2f}" if self.average_frequency[ch] > 0 else "0.00",
                     "Gap": "0.00",
-                    "Direct": self.format_direct_value(direct_values, unit),
-                    "Bandpass": self.format_direct_value([self.band_pass_peak_to_peak[ch]], unit),
+                    "Direct": self.format_direct_bandpass_value(np.mean(direct_values) if direct_values else 0.0, unit),
+                    "Bandpass": self.format_direct_bandpass_value(self.band_pass_peak_to_peak[ch], unit),
                     "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
                     "1xP": f"{np.mean(self.one_x_phases[ch]):.2f}" if self.one_x_phases[ch] else "0.00",
                     "2xA": self.format_direct_value([np.mean(self.two_x_amps[ch])], unit) if self.two_x_amps[ch] else "0.00",

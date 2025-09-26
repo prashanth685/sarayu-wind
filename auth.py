@@ -104,7 +104,7 @@ class AuthWindow(QWidget):
         email_label = QLabel('Email')
         email_label.setStyleSheet("font-size: 18px; color: #333; font-weight: bold;")
         self.email_input = self.create_input_field('Enter your email')
-        self.email_input.setText('')
+        self.email_input.setText('raj@gmail.com')
         self.email_input.setStyleSheet('font-size:16px;font:bold')
         self.form_fields.addRow(email_label, self.email_input)
 
@@ -112,7 +112,7 @@ class AuthWindow(QWidget):
         password_label = QLabel('Password')
         password_label.setStyleSheet("font-size: 18px; color: #333; font-weight: bold;")
         self.password_input = self.create_input_field('Enter your password')
-        self.password_input.setText('')
+        self.password_input.setText('12345678')
         self.password_input.setStyleSheet('font-size:16px;font:bold')
         self.password_input.setEchoMode(QLineEdit.Password)
         self.form_fields.addRow(password_label, self.password_input)

@@ -43,7 +43,7 @@ if __name__ == '__main__':
         candidates = [
             os.path.join(base_dir, 'logo.ico'),
             os.path.join(base_dir, 'logo.png'),
-            os.path.join(base_dir, 'icons', 'placeholder.png'),
+            os.path.join(base_dir, 'icons', 'logo.png'),
         ]
         icon_path = next((p for p in candidates if os.path.exists(p)), None)
         if icon_path:
