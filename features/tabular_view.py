@@ -141,7 +141,7 @@ class TabularViewFeature:
         # Calibration constants to match Time View
         self.scaling_factor = 3.3 / 65535.0
         self.off_set = 32768
-        # Latest gap voltages from header[15..25] scaled by 1/100
+        # Latest gap voltages from header[15..28] scaled by 1/100 (signed int16)
         self.gap_voltages = []
         self.initUI()
         self.initialize_thread()
@@ -1179,7 +1179,7 @@ class TabularViewFeature:
         return self.widget
 
     def set_gap_voltages(self, gaps):
-        """Update the latest gap voltages read from MQTT header[15..25] (already scaled by 1/100)."""
+        """Update the latest gap voltages read from MQTT header[15..28] (already scaled by 1/100, signed)."""
         try:
             if not isinstance(gaps, (list, tuple)):
                 return

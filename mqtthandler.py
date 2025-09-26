@@ -246,12 +246,17 @@ class MQTTHandler(QObject):
                         total_values = values[100:]
                         samples_per_channel = (len(total_values) // total_channels) if total_values and total_channels > 0 else 0
 
-                        # Extract gap voltages from header[15]..header[25] and scale by 1/100
+                        # Extract gap voltages from header[15]..header[28] (inclusive) as signed int16 and scale by 1/100
                         try:
-                            if len(header) >= 26:
-                                gaps = [float(h) / 100.0 for h in header[15:26]]
+                            if len(header) >= 29:
+                                signed_gaps = []
+                                for h in header[15:29]:
+                                    # Convert from uint16 to int16
+                                    if h >= 32768:
+                                        h = h - 65536
+                                    signed_gaps.append(float(h) / 100.0)
                                 # Emit asynchronously for interested features (e.g., Tabular View)
-                                self.gap_values_received.emit(model_name, tag_name, gaps)
+                                self.gap_values_received.emit(model_name, tag_name, signed_gaps)
                         except Exception:
                             # Do not fail processing on gap extraction issues
                             pass
