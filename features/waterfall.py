@@ -254,7 +254,7 @@ class WaterfallFeature:
         try:
             self.ax.clear()
             display_channels = self.main_channels if self.main_channels > 0 else self.channel_count
-            self.ax.set_title(f"Waterfall FFT Plot (Model: {self.model_name}, {display_channels} Main Channels)")
+            self.ax.set_title(f"Waterfall Plot")
             self.ax.set_xlabel("Frequency (Hz)")
             self.ax.set_ylabel("Channel")
             self.ax.set_zlabel("Amplitude (V)")

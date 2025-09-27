@@ -1,6 +1,6 @@
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QScrollArea, QPushButton, QCheckBox, QComboBox, QHBoxLayout, QGridLayout, QLabel, QSizePolicy, QHeaderView
-from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer
+from PyQt5.QtCore import Qt, QThread, QObject, pyqtSignal, QTimer, QPropertyAnimation, QEasingCurve
 from PyQt5.QtGui import QIcon, QFont
 import pyqtgraph as pg
 from datetime import datetime
@@ -13,7 +13,6 @@ logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %
 class TabularViewSettings:
     def __init__(self, project_id):
         self.project_id = project_id
-        self.bandpass_selection = "None"
         self.channel_name_visible = True
         self.unit_visible = True
         self.datetime_visible = True
@@ -116,12 +115,12 @@ class TabularViewFeature:
         self.three_x_amps = [[]]
         self.three_x_phases = [[]]
         self.start_time = datetime.now()
+        # Use keys that match the table header labels for consistency
         self.column_visibility = {
             "Channel Name": True, "Unit": True, "DateTime": True, "RPM": True, "Gap": True,
-            "Direct": True, "Bandpass": True, "1xA": True, "1xP": True, "2xA": True,
-            "2xP": True, "NXAmp": True, "NXPhase": True
+            "Direct": True, "Bandpass": True, "1xAmp": True, "1xPhase": True, "2xAmp": True,
+            "2xPhase": True, "NXAmp": True, "NXPhase": True
         }
-        self.bandpass_selection = "None"
         self.plot_initialized = False
         self.table = None
         self.plot_widgets = []
@@ -143,8 +142,50 @@ class TabularViewFeature:
         self.off_set = 32768
         # Latest gap voltages from header[15..28] scaled by 1/100 (signed int16)
         self.gap_voltages = []
+        # Headers: keep stable internal keys and customizable display labels for NX columns
+        self.internal_headers = [
+            "Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass",
+            "1xAmp", "1xPhase", "2xAmp", "2xPhase", "NXAmp", "NXPhase"
+        ]
+        self.custom_nx_amp_header = "NXAmp"
+        self.custom_nx_phase_header = "NXPhase"
         self.initUI()
         self.initialize_thread()
+
+    def get_display_headers(self):
+        """Return header labels for display, with customizable NX headers."""
+        headers = list(self.internal_headers)
+        # Replace the last two with custom labels while keeping order
+        try:
+            nx_amp_index = headers.index("NXAmp")
+            headers[nx_amp_index] = self.custom_nx_amp_header or "NXAmp"
+        except ValueError:
+            pass
+        try:
+            nx_phase_index = headers.index("NXPhase")
+            headers[nx_phase_index] = self.custom_nx_phase_header or "NXPhase"
+        except ValueError:
+            pass
+        return headers
+
+    def apply_custom_headers(self):
+        """Apply current custom NX headers to the table and settings checkboxes UI."""
+        try:
+            if self.table:
+                self.table.setHorizontalHeaderLabels(self.get_display_headers())
+            # Update checkbox labels but keep internal keys in the dict
+            try:
+                if "NXAmp" in self.checkbox_dict and self.checkbox_dict["NXAmp"]:
+                    self.checkbox_dict["NXAmp"].setText(self.custom_nx_amp_header or "NXAmp")
+            except Exception:
+                pass
+            try:
+                if "NXPhase" in self.checkbox_dict and self.checkbox_dict["NXPhase"]:
+                    self.checkbox_dict["NXPhase"].setText(self.custom_nx_phase_header or "NXPhase")
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def initUI(self):
         pg.setConfigOption('background', 'w')
@@ -155,8 +196,8 @@ class TabularViewFeature:
 
         # Top bar: header (center) and settings button (right) on the same line
         top_layout = QHBoxLayout()
-        header = QLabel(f"TABULAR VIEW FOR {self.project_name.upper()}")
-        header.setStyleSheet("color: black; font-size: 26px; font-weight: bold; padding: 8px;")
+        header = QLabel(f"TABULAR VIEW")
+        header.setStyleSheet("color: black; font-size: 30px; font-weight: bold; padding: 8px;font-family: 'Times New Roman', Times, serif;")
         top_layout.addStretch()  # left spacer
         top_layout.addWidget(header, alignment=Qt.AlignCenter)
         top_layout.addStretch()  # right spacer to keep header centered
@@ -194,7 +235,13 @@ class TabularViewFeature:
             QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
-        self.settings_panel.setFixedWidth(300)
+        # Target width for the sliding panel
+        self._settings_width = 350
+        self.settings_panel.setFixedWidth(self._settings_width)
+        # Allow collapse by relaxing the minimum width
+        self.settings_panel.setMinimumWidth(0)
+        # For slide animation, control maximumWidth
+        self.settings_panel.setMaximumWidth(0)
         settings_layout = QGridLayout()
         settings_layout.setSpacing(10)
         # Make columns proportionally flexible
@@ -207,24 +254,26 @@ class TabularViewFeature:
         title.setObjectName("settingsTitle")
         settings_layout.addWidget(title, 0, 0, 1, 3)
 
-        bandpass_label = QLabel("Bandpass Selection:")
-        bandpass_label.setStyleSheet("font-size: 14px;")
-        # Place bandpass controls on the first row below the title
-        settings_layout.addWidget(bandpass_label, 1, 0)
-        self.bandpass_combo = QComboBox()
-        self.bandpass_combo.addItems(["None", "50-200 Hz", "100-300 Hz"])
-        self.bandpass_combo.setStyleSheet("""
-            QComboBox {
-                padding: 5px;
-                border: 1px solid #d0d0d0;
-                border-radius: 4px;
-                background-color: white;
-                min-width: 100px;
-            }
-        """)
-        settings_layout.addWidget(self.bandpass_combo, 1, 1, 1, 2)
+        # Custom headers for NX columns
+        nx_amp_label = QLabel("NX Amp Header:")
+        self.nx_amp_header_input = QComboBox()
+        # Use editable combo to allow typing or choosing defaults
+        self.nx_amp_header_input.setEditable(True)
+        self.nx_amp_header_input.addItems([self.custom_nx_amp_header, "NXAmp", "3xAmp", "Harmonic Amp"])  # some suggestions
+        self.nx_amp_header_input.setCurrentText(self.custom_nx_amp_header)
+        settings_layout.addWidget(nx_amp_label, 1, 0)
+        settings_layout.addWidget(self.nx_amp_header_input, 1, 1, 1, 2)
 
-        headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
+        nx_phase_label = QLabel("NX Phase Header:")
+        self.nx_phase_header_input = QComboBox()
+        self.nx_phase_header_input.setEditable(True)
+        self.nx_phase_header_input.addItems([self.custom_nx_phase_header, "NXPhase", "3xPhase", "Harmonic Phase"])  # suggestions
+        self.nx_phase_header_input.setCurrentText(self.custom_nx_phase_header)
+        settings_layout.addWidget(nx_phase_label, 2, 0)
+        settings_layout.addWidget(self.nx_phase_header_input, 2, 1, 1, 2)
+
+        # Use internal headers for visibility keys; display text for NX columns will be customized
+        headers = list(self.internal_headers)
         self.checkbox_dict = {}
         # Create a scrollable area for many checkboxes to avoid overflow
         opts_scroll = QScrollArea()
@@ -235,15 +284,24 @@ class TabularViewFeature:
         opts_layout.setContentsMargins(0, 0, 0, 0)
         opts_layout.setSpacing(6)
         for header in headers:
-            cb = QCheckBox(header)
-            cb.setChecked(True)
+            # Create checkboxes for visibility; for NX columns use current custom labels but key them by internal name
+            display_text = header
+            key = header
+            if header == "NXAmp":
+                display_text = self.custom_nx_amp_header or header
+            elif header == "NXPhase":
+                display_text = self.custom_nx_phase_header or header
+            cb = QCheckBox(display_text)
+            cb.setChecked(self.column_visibility.get(key, True))
             cb.setStyleSheet("font-size: 14px;")
-            self.checkbox_dict[header] = cb
+            # Immediate apply on toggle
+            cb.toggled.connect(lambda checked, h=key: self.on_column_toggle(h, checked))
+            self.checkbox_dict[key] = cb
             opts_layout.addWidget(cb)
         opts_layout.addStretch()
         opts_scroll.setWidget(opts_container)
-        # Place the options scroll area in row 2 spanning full width of the panel
-        settings_layout.addWidget(opts_scroll, 2, 0, 1, 3)
+        # Place the options scroll area in row 3 spanning full width of the panel
+        settings_layout.addWidget(opts_scroll, 3, 0, 1, 3)
 
         self.save_settings_button = QPushButton("Save")
         self.save_settings_button.setStyleSheet("""
@@ -286,16 +344,16 @@ class TabularViewFeature:
         self.close_settings_button.clicked.connect(self.close_settings)
 
         # Push buttons to the bottom below the scroll area
-        buttons_row = 3
-        settings_layout.setRowStretch(2, 1)  # make the scroll area take remaining space
+        buttons_row = 4
+        settings_layout.setRowStretch(3, 1)  # make the scroll area take remaining space
         settings_layout.addWidget(self.save_settings_button, buttons_row, 0, alignment=Qt.AlignRight)
         settings_layout.addWidget(self.close_settings_button, buttons_row, 1, alignment=Qt.AlignLeft)
         settings_layout.addWidget(QLabel(""), buttons_row, 2)
 
         # Left content: table + plots scroll area
         self.table = QTableWidget()
-        self.table.setColumnCount(len(headers))
-        self.table.setHorizontalHeaderLabels(headers)
+        self.table.setColumnCount(len(self.internal_headers))
+        self.table.setHorizontalHeaderLabels(self.get_display_headers())
         # Table styling and behavior
         self.table.setAlternatingRowColors(True)
         self.table.setShowGrid(True)
@@ -354,6 +412,10 @@ class TabularViewFeature:
         content_layout.setSpacing(8)
         content_layout.addWidget(left_container, 1)
         content_layout.addWidget(self.settings_panel)
+        # Prepare animation for sliding the settings panel
+        self._settings_anim = QPropertyAnimation(self.settings_panel, b"maximumWidth")
+        self._settings_anim.setDuration(200)
+        self._settings_anim.setEasingCurve(QEasingCurve.InOutCubic)
         layout.addLayout(content_layout)
 
         # Do not initialize plots (disabled for Tabular View)
@@ -476,7 +538,7 @@ class TabularViewFeature:
                 item = QTableWidgetItem(default_data[header])
                 item.setTextAlignment(Qt.AlignCenter)
                 # Make table values bold
-                bold_font = QFont()
+                bold_font = QFont("Times New Roman", 10)
                 bold_font.setBold(True)
                 item.setFont(bold_font)
                 self.table.setItem(row, col, item)
@@ -513,7 +575,10 @@ class TabularViewFeature:
             settings_collection = database.get_collection("TabularViewSettings")
             setting = settings_collection.find_one({"projectId": self.project_id}, sort=[("updated_at", -1)])
             if setting:
-                self.bandpass_selection = setting.get("bandpassSelection", "None")
+                # Custom NX header labels
+                self.custom_nx_amp_header = setting.get("customNXAmpHeader", self.custom_nx_amp_header)
+                self.custom_nx_phase_header = setting.get("customNXPhaseHeader", self.custom_nx_phase_header)
+                # Map DB fields to UI header keys
                 self.column_visibility = {
                     "Channel Name": setting.get("channelNameVisible", True),
                     "Unit": setting.get("unitVisible", True),
@@ -529,20 +594,35 @@ class TabularViewFeature:
                     "NXAmp": setting.get("nxAmpVisible", True),
                     "NXPhase": setting.get("nxPhaseVisible", True)
                 }
+                # Refresh checkbox labels to reflect custom headers
+                self.apply_custom_headers()
                 for header, cb in self.checkbox_dict.items():
                     cb.setChecked(self.column_visibility.get(header, True))
-                self.bandpass_combo.setCurrentText(self.bandpass_selection)
+                # Update inputs if present
+                try:
+                    if hasattr(self, 'nx_amp_header_input') and self.nx_amp_header_input:
+                        self.nx_amp_header_input.setCurrentText(self.custom_nx_amp_header)
+                    if hasattr(self, 'nx_phase_header_input') and self.nx_phase_header_input:
+                        self.nx_phase_header_input.setCurrentText(self.custom_nx_phase_header)
+                except Exception:
+                    pass
             self.update_column_visibility()
         except Exception as ex:
             self.log_and_set_status(f"Error loading settings: {str(ex)}")
 
     def save_settings(self):
         try:
-            self.bandpass_selection = self.bandpass_combo.currentText()
             for header, cb in self.checkbox_dict.items():
                 self.column_visibility[header] = cb.isChecked()
+            # Save any custom NX header labels from inputs
+            try:
+                if hasattr(self, 'nx_amp_header_input') and self.nx_amp_header_input:
+                    self.custom_nx_amp_header = (self.nx_amp_header_input.currentText() or "NXAmp").strip()
+                if hasattr(self, 'nx_phase_header_input') and self.nx_phase_header_input:
+                    self.custom_nx_phase_header = (self.nx_phase_header_input.currentText() or "NXPhase").strip()
+            except Exception:
+                pass
             settings = TabularViewSettings(self.project_id)
-            settings.bandpass_selection = self.bandpass_selection
             settings.channel_name_visible = self.column_visibility["Channel Name"]
             settings.unit_visible = self.column_visibility["Unit"]
             settings.datetime_visible = self.column_visibility["DateTime"]
@@ -550,6 +630,7 @@ class TabularViewFeature:
             settings.gap_visible = self.column_visibility["Gap"]
             settings.direct_visible = self.column_visibility["Direct"]
             settings.bandpass_visible = self.column_visibility["Bandpass"]
+            # Map UI keys back to DB fields
             settings.one_xa_visible = self.column_visibility["1xA"]
             settings.one_xp_visible = self.column_visibility["1xP"]
             settings.two_xa_visible = self.column_visibility["2xA"]
@@ -560,7 +641,6 @@ class TabularViewFeature:
             settings_collection = database.get_collection("TabularViewSettings")
             settings_collection.insert_one({
                 "projectId": self.project_id,
-                "bandpassSelection": settings.bandpass_selection,
                 "channelNameVisible": settings.channel_name_visible,
                 "unitVisible": settings.unit_visible,
                 "datetimeVisible": settings.datetime_visible,
@@ -574,27 +654,58 @@ class TabularViewFeature:
                 "twoXpVisible": settings.two_xp_visible,
                 "nxAmpVisible": settings.nx_amp_visible,
                 "nxPhaseVisible": settings.nx_phase_visible,
+                "customNXAmpHeader": self.custom_nx_amp_header,
+                "customNXPhaseHeader": self.custom_nx_phase_header,
                 "updated_at": settings.updated_at
             })
             self.update_column_visibility()
+            # Apply updated header labels to table and checkbox text
+            self.apply_custom_headers()
             if self.console:
                 self.console.append_to_console("Settings saved successfully")
         except Exception as ex:
             self.log_and_set_status(f"Error saving settings: {str(ex)}")
 
     def toggle_settings(self):
-        self.settings_panel.setVisible(not self.settings_panel.isVisible())
-        # Hide the button when panel is visible, similar to Time/FFT views
-        self.settings_button.setVisible(not self.settings_panel.isVisible())
+        opening = not self.settings_panel.isVisible()
+        if opening:
+            self.settings_panel.setVisible(True)
+            self._settings_anim.stop()
+            self._settings_anim.setStartValue(self.settings_panel.maximumWidth())
+            self._settings_anim.setEndValue(self._settings_width)
+            self._settings_anim.start()
+            self.settings_button.setVisible(False)
+        else:
+            self.close_settings()
 
     def close_settings(self):
-        self.settings_panel.setVisible(False)
-        self.settings_button.setVisible(True)
+        # Animate close then hide
+        self._settings_anim.stop()
+        self._settings_anim.setStartValue(self.settings_panel.maximumWidth())
+        self._settings_anim.setEndValue(0)
+        def _after():
+            self.settings_panel.setVisible(False)
+            self.settings_button.setVisible(True)
+        self._settings_anim.finished.connect(_after)
+        self._settings_anim.start()
+        # Disconnect the temporary slot after it's called once to avoid accumulation
+        def _cleanup():
+            try:
+                self._settings_anim.finished.disconnect(_after)
+            except Exception:
+                pass
+        self._settings_anim.finished.connect(_cleanup)
+
+    def on_column_toggle(self, header, checked):
+        # header here is the internal key (we key checkbox_dict by internal) so use as-is
+        self.column_visibility[header] = checked
+        self.update_column_visibility()
 
     def update_column_visibility(self):
-        headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
-        for col, header in enumerate(headers):
-            self.table.setColumnHidden(col, not self.column_visibility[header])
+        # Use internal header order to control visibility
+        for col, internal in enumerate(self.internal_headers):
+            hidden = not self.column_visibility.get(internal, True)
+            self.table.setColumnHidden(col, hidden)
 
     def get_trigger_indices(self, trigger_data):
         trigger_data = np.array(trigger_data)
@@ -665,11 +776,17 @@ class TabularViewFeature:
         # Values are already calibrated to the selected unit; only format
         avg = float(np.mean(values))
         unit = (unit or "mil").lower()
-        if unit == "mm":
-            return f"{avg:.6f}"
+        # Unit-based decimals for amplitude/metrics:
+        # mil: 1 decimal, mm: 3 decimals, um: 0 decimals, v: 3 decimals, default: 2
+        if unit == "mil":
+            return f"{avg:.1f}"
+        elif unit == "mm":
+            return f"{avg:.3f}"
         elif unit == "um":
-            return f"{avg:.2f}"
-        else:  # mil or others
+            return f"{avg:.0f}"
+        elif unit == "v":
+            return f"{avg:.3f}"
+        else:
             return f"{avg:.2f}"
 
     def format_direct_bandpass_value(self, value, unit):
@@ -782,12 +899,8 @@ class TabularViewFeature:
                 self.raw_data[ch] = self.process_calibrated_data(values[ch], ch)
                 nyquist = self.sample_rate / 2.0
                 tap_num = 31
-                if self.bandpass_selection == "50-200 Hz":
-                    band = [50 / nyquist, 200 / nyquist]
-                elif self.bandpass_selection == "100-300 Hz":
-                    band = [100 / nyquist, 300 / nyquist]
-                else:
-                    band = [50 / nyquist, 200 / nyquist]
+                # Fixed bandpass as per spec (removed selection UI)
+                band = [50 / nyquist, 200 / nyquist]
                 low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
                 high_pass_coeffs = signal.firwin(tap_num, 200 / nyquist, window='hamming', pass_zero=False)
                 band_pass_coeffs = signal.firwin(tap_num, band, window='hamming', pass_zero=False)
@@ -859,11 +972,11 @@ class TabularViewFeature:
                     "Direct": self.format_direct_bandpass_value(avg_direct, unit),
                     "Bandpass": self.format_direct_bandpass_value(avg_bandpass, unit),
                     "1xA": self.format_direct_value([avg_1xa], unit),
-                    "1xP": f"{avg_1xp:.2f}",
+                    "1xP": f"{avg_1xp:.0f}",
                     "2xA": self.format_direct_value([avg_2xa], unit),
-                    "2xP": f"{avg_2xp:.2f}",
+                    "2xP": f"{avg_2xp:.0f}",
                     "NXAmp": self.format_direct_value([avg_nxa], unit),
-                    "NXPhase": f"{avg_nxp:.2f}"
+                    "NXPhase": f"{avg_nxp:.0f}"
                 }
                 self.update_table_row(ch, channel_data)
             QTimer.singleShot(0, self.update_plots)
@@ -944,13 +1057,8 @@ class TabularViewFeature:
                 tap_num = 31
                 low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
                 high_pass_coeffs = signal.firwin(tap_num, 200 / nyquist, window='hamming', pass_zero=False)
-                # Use current bandpass setting
-                if self.bandpass_selection == "50-200 Hz":
-                    band = [50 / nyquist, 200 / nyquist]
-                elif self.bandpass_selection == "100-300 Hz":
-                    band = [100 / nyquist, 300 / nyquist]
-                else:
-                    band = [50 / nyquist, 200 / nyquist]
+                # Fixed bandpass as per spec (removed selection UI)
+                band = [50 / nyquist, 200 / nyquist]
                 band_pass_coeffs = signal.firwin(tap_num, band, window='hamming', pass_zero=False)
 
                 self.low_pass_data[ch] = signal.lfilter(low_pass_coeffs, 1.0, self.raw_data[ch])
@@ -1011,7 +1119,7 @@ class TabularViewFeature:
                 item = QTableWidgetItem(channel_data[header])
                 item.setTextAlignment(Qt.AlignCenter)
                 # Make table values bold
-                bold_font = QFont()
+                bold_font = QFont("Times New Roman", 10)
                 bold_font.setBold(True)
                 item.setFont(bold_font)
                 self.table.setItem(row, col, item)
@@ -1044,11 +1152,11 @@ class TabularViewFeature:
                     "Direct": self.format_direct_bandpass_value(np.mean(direct_values) if direct_values else 0.0, unit),
                     "Bandpass": self.format_direct_bandpass_value(self.band_pass_peak_to_peak[ch], unit),
                     "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
-                    "1xP": f"{np.mean(self.one_x_phases[ch]):.2f}" if self.one_x_phases[ch] else "0.00",
+                    "1xP": f"{np.mean(self.one_x_phases[ch]):.0f}" if self.one_x_phases[ch] else "0.00",
                     "2xA": self.format_direct_value([np.mean(self.two_x_amps[ch])], unit) if self.two_x_amps[ch] else "0.00",
-                    "2xP": f"{np.mean(self.two_x_phases[ch]):.2f}" if self.two_x_phases[ch] else "0.00",
+                    "2xP": f"{np.mean(self.two_x_phases[ch]):.0f}" if self.two_x_phases[ch] else "0.00",
                     "NXAmp": self.format_direct_value([np.mean(self.three_x_amps[ch])], unit) if self.three_x_amps[ch] else "0.00",
-                    "NXPhase": f"{np.mean(self.three_x_phases[ch]):.2f}" if self.three_x_phases[ch] else "0.00"
+                    "NXPhase": f"{np.mean(self.three_x_phases[ch]):.0f}" if self.three_x_phases[ch] else "0.00"
                 }
                 self.update_table_row(ch, channel_data)
             # After bulk updates, adjust rows and table height

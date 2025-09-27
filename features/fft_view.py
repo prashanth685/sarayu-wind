@@ -173,7 +173,7 @@ class FFTViewFeature:
         QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
-        self.settings_panel.setFixedWidth(250)
+        self.settings_panel.setFixedWidth(400)
 
         settings_layout = QGridLayout()
         settings_layout.setSpacing(10)
@@ -316,7 +316,7 @@ class FFTViewFeature:
         self.magnitude_plot_widget = pg.PlotWidget()
         self.magnitude_plot_widget.setBackground("white")
         display_channel = self.channel_name if self.channel_name else f"Channel_{self.channel_index + 1}" if self.channel_index is not None else "Unknown"
-        self.magnitude_plot_widget.setTitle(f"Magnitude Spectrum - {self.model_name or 'Unknown'} - {display_channel}", color="black", size="12pt")
+        self.magnitude_plot_widget.setTitle(f"Magnitude Spectrum - {display_channel}", color="black", size="12pt")
         self.magnitude_plot_widget.setLabel('left', 'Amplitude', color='#000000')
         self.magnitude_plot_widget.setLabel('bottom', 'Frequency (Hz)', color='#000000')
         self.magnitude_plot_widget.showGrid(x=True, y=True)
@@ -345,7 +345,7 @@ class FFTViewFeature:
 
         self.phase_plot_widget = pg.PlotWidget()
         self.phase_plot_widget.setBackground("white")
-        self.phase_plot_widget.setTitle(f"Phase Spectrum - {self.model_name or 'Unknown'} - {display_channel}", color="black", size="12pt")
+        self.phase_plot_widget.setTitle(f"Phase Spectrum - {display_channel}", color="black", size="12pt")
         self.phase_plot_widget.setLabel('left', 'Phase (degrees)', color='#000000')
         self.phase_plot_widget.setLabel('bottom', 'Frequency (Hz)', color='#000000')
         self.phase_plot_widget.showGrid(x=True, y=True)

@@ -111,7 +111,7 @@ class TimeViewFeature:
         self.active_line_idx = None
 
         self.plot_colors = [
-            '#0000FF', '#FF0000', '#00FF00', '#800080', '#FFA500', '#A52A2A', '#FFC0CB', '#008080',
+            '#0000FF', '#FF0000', '#00FF00', '#800080', '#FFA500', '#A52A2A', "#C21532", '#008080',
             '#FF4500', '#32CD32', '#00CED1', "#0D0D0C", '#FF69B4', '#8A2BE2', '#FF6347', '#20B2AA',
             '#ADFF2F', '#9932CC', '#FF7F50', '#00FA9A', '#9400D3'
         ]
@@ -123,7 +123,7 @@ class TimeViewFeature:
         self.widget = QWidget()
         main_layout = QVBoxLayout()
 
-        header = QLabel(f"TIME VIEW FOR {self.project_name.upper()}")
+        header = QLabel(f"TIME VIEW")
         header.setStyleSheet("color: black; font-size: 26px; font-weight: bold; padding: 8px;")
         main_layout.addWidget(header, alignment=Qt.AlignCenter)
 
@@ -160,7 +160,7 @@ class TimeViewFeature:
         QLabel#settingsTitle { font-size: 16px; font-weight: 700; padding: 4px 0 10px 0; }
         """)
         self.settings_panel.setVisible(False)
-        self.settings_panel.setFixedWidth(250)
+        self.settings_panel.setFixedWidth(350)
 
         settings_layout = QGridLayout()
         settings_layout.setSpacing(10)

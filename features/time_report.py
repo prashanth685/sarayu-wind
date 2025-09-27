@@ -266,7 +266,7 @@ class TimeReportFeature:
         layout = QVBoxLayout()
         self.widget.setLayout(layout)
 
-        header = QLabel(f"TIME REPORT FOR {self.project_name.upper()}")
+        header = QLabel(f"TIME REPORT")
         header.setStyleSheet("color: black; font-size: 26px; font-weight: bold; padding: 8px;")
         layout.addWidget(header, alignment=Qt.AlignCenter)
 

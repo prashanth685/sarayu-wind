@@ -30,7 +30,7 @@ class MainSection(QWidget):
         self.mdi_area = QMdiArea()
         self.mdi_area.setStyleSheet("""
             QMdiArea { background-color: #ebeef2; border: none; }
-            QMdiSubWindow { background-color: #ebeef2; border: 1px solid #ebeef2; border-radius: 4px; }
+            QMdiSubWindow { background-color: #ebeef2;height: 40px; }
             QMdiSubWindow::title { height: 40px; }
         """)
         self.mdi_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -54,13 +54,15 @@ class MainSection(QWidget):
         self.scroll_area.hide()
         logging.debug(f"Set widget in MainSection: {type(widget).__name__}")
 
-    def add_subwindow(self, widget, feature_name, channel_name=None, model_name=None):
+    def add_subwindow(self, widget, feature_name,project_name=None, channel_name=None, model_name=None):
         try:
             subwindow = QMdiSubWindow()
             subwindow.setWidget(widget)
             subwindow.setOption(QMdiSubWindow.RubberBandMove, False)
             subwindow.setWindowFlags(subwindow.windowFlags() & ~Qt.WindowMinimizeButtonHint)
-            title = f"{model_name or ''} - {channel_name or ''} - {feature_name}".strip(" - ")
+            # Ensure project_name is always resolved: fall back to parent's current project if not provided
+            resolved_project = project_name or getattr(self.parent, 'current_project', None) or ''
+            title = f"{resolved_project} - {feature_name}".strip(" - ")
             subwindow.setWindowTitle(title)
             self.mdi_area.addSubWindow(subwindow)
             subwindow.showNormal()
@@ -71,7 +73,6 @@ class MainSection(QWidget):
         except Exception as e:
             logging.error(f"Failed to add subwindow for {feature_name}: {str(e)}")
             return None
-
     def clear_widget(self):
         try:
             for subwindow in self.mdi_area.subWindowList():
