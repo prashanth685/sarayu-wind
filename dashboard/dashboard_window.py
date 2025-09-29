@@ -158,10 +158,10 @@ class DashboardWindow(QWidget):
         QMdiSubWindow {
             background-color: #ebeef2;
             border: 1px solid #ebeef2;
-            border-radius: 4px;
+            border-radius: 0px;
         }
         QMdiSubWindow > QWidget {
-            background-color: #ebeef2;
+            background-color: yellow;
             color: #ecf0f1;
         }
         """)

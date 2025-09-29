@@ -125,9 +125,9 @@ class TimeViewFeature:
 
         header = QLabel(f"TIME VIEW")
         header.setStyleSheet("color: black; font-size: 26px; font-weight: bold; padding: 8px;")
-        main_layout.addWidget(header, alignment=Qt.AlignCenter)
 
         top_layout = QHBoxLayout()
+        # Keep header centered with stretches on both sides and place settings button on the right
         top_layout.addStretch()
 
         self.settings_button = QPushButton("⚙️ Settings")
@@ -145,6 +145,8 @@ class TimeViewFeature:
         QPushButton:pressed { background-color: #3d8b40; }
         """)
         self.settings_button.clicked.connect(self.toggle_settings)
+        top_layout.addWidget(header, alignment=Qt.AlignCenter)
+        top_layout.addStretch()
         top_layout.addWidget(self.settings_button)
         main_layout.addLayout(top_layout)
 
@@ -388,7 +390,7 @@ class TimeViewFeature:
 
             channel_name = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
             unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
-            y_label = f"Amplitude ({unit})" if i < self.main_channels else "Value"
+            y_label = f"{unit}" if i < self.main_channels else "Value"
 
             if i < self.main_channels:
                 # Set label for main channels (bold and larger size)
