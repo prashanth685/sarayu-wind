@@ -286,6 +286,7 @@ class TimeViewFeature:
                         self.channel_properties[channel_name] = {
                             "type": channel.get("type", "Displacement"),
                             "unit": channel.get("unit", "mil").lower(),
+                            "subunit": str(channel.get("subunit", "pk-pk")).lower(),
                             "correctionValue": float(channel.get("correctionValue", "1.0") or "1.0"),
                             "gain": float(channel.get("gain", "1.0") or "1.0"),
                             "sensitivity": float(channel.get("sensitivity", "1.0") or "1.0"),
@@ -389,8 +390,10 @@ class TimeViewFeature:
             self.scroll_layout.addWidget(plot_container)
 
             channel_name = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
-            unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
-            y_label = f"{unit}" if i < self.main_channels else "Value"
+            props = self.channel_properties.get(channel_name, {})
+            unit = props.get("unit", "mil")
+            subunit = props.get("subunit", "pk-pk")
+            y_label = f"{unit} - {subunit}" if i < self.main_channels else "Value"
 
             if i < self.main_channels:
                 # Set label for main channels (bold and larger size)

@@ -70,6 +70,7 @@ class TabularViewWorker(QObject):
                 unit = channel.get("unit", "mil").lower().strip()
                 channel_properties[channel_name] = {
                     "Unit": unit,
+                    "Subunit": str(channel.get("subunit", "pk-pk")).lower().strip() or "pk-pk",
                     "CorrectionValue": correction_value,
                     "Gain": gain,
                     "Sensitivity": sensitivity
@@ -144,7 +145,7 @@ class TabularViewFeature:
         self.gap_voltages = []
         # Headers: keep stable internal keys and customizable display labels for NX columns
         self.internal_headers = [
-            "Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass",
+            "Channel Name", "Unit", "DateTime", "RPM", "Gap(v)", "Direct", "Bandpass",
             "1xAmp", "1xPhase", "2xAmp", "2xPhase", "NXAmp", "NXPhase"
         ]
         self.custom_nx_amp_header = "NXAmp"
@@ -152,6 +153,17 @@ class TabularViewFeature:
         # NX harmonic selections (defaults to 3x)
         self.nx_amp_selection = 3
         self.nx_phase_selection = 3
+        # Performance: cache filter coefficients and throttle expensive UI ops
+        self._last_filter_rate = None
+        self._low_pass_coeffs = None
+        self._high_pass_coeffs = None
+        self._band_pass_coeffs = None
+        self._last_props_refresh = datetime.min
+        self._props_refresh_interval_sec = 5  # avoid DB lookups more than every 5s
+        self._last_table_resize = datetime.min
+        self._table_resize_interval_sec = 2  # resize rows/height at most every 2s
+        self._last_log_time = datetime.min
+        self._log_interval_sec = 5  # reduce console spam
         self.initUI()
         self.initialize_thread()
 
@@ -520,7 +532,7 @@ class TabularViewFeature:
         if sip.isdeleted(self.table):
             self.log_and_set_status("Table widget deleted, skipping update_table_defaults")
             return
-        headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
+        headers = ["Channel Name", "Unit", "DateTime", "RPM", "Gap(v)", "Direct", "Bandpass", "1xA", "1xP", "2xA", "2xP", "NXAmp", "NXPhase"]
         self.table.setRowCount(self.num_channels)
         for row in range(self.num_channels):
             channel_name = self.channel_names[row] if row < len(self.channel_names) else f"Channel {row+1}"
@@ -822,6 +834,23 @@ class TabularViewFeature:
         except Exception:
             return "0.0"
 
+    def _convert_ptp_by_subunit(self, ptp_value, subunit):
+        """Convert a peak-to-peak value into the desired subunit.
+        subunit: 'pk-pk' => unchanged, 'pk' => ptp/2, 'rms' => ptp/(2*sqrt(2)) assuming sinusoid.
+        """
+        try:
+            if ptp_value is None:
+                return 0.0
+            sub = (subunit or "pk-pk").lower().strip()
+            v = float(ptp_value)
+            if sub == "pk":
+                return v / 2.0
+            if sub == "rms":
+                return v / (2.0 * np.sqrt(2.0))
+            return v
+        except Exception:
+            return float(ptp_value or 0.0)
+
     def on_data_received(self, tag_name, model_name, values, sample_rate, frame_index):
         if not values or len(values) < 1:
             self.log_and_set_status(f"Insufficient data received for frame {frame_index}: {len(values)} channels")
@@ -836,8 +865,11 @@ class TabularViewFeature:
         if not self.data_buffer:
             return
         try:
-            # Ensure we have the latest channel mapping and units from DB
-            self.refresh_channel_properties()
+            # Rate-limit DB-backed refreshes to avoid UI stalls
+            now = datetime.now()
+            if (now - self._last_props_refresh).total_seconds() >= self._props_refresh_interval_sec:
+                self.refresh_channel_properties()
+                self._last_props_refresh = now
             values, sample_rate, frame_index = self.data_buffer[-1]  # Process the latest data
             self.data_buffer = []  # Clear buffer after processing
 
@@ -880,8 +912,9 @@ class TabularViewFeature:
 
             self.sample_rate = sample_rate if sample_rate and sample_rate > 0 else self.sample_rate
             self.data = values
-            if self.console:
+            if self.console and (datetime.now() - self._last_log_time).total_seconds() >= self._log_interval_sec:
                 self.console.append_to_console(f"Processing buffered data for frame {frame_index}, mains={self.num_channels}, tacho={inferred_tacho}")
+                self._last_log_time = datetime.now()
 
             # Compute triggers from tacho trigger channel (prefer second tacho if present)
             trigger_index = self.num_channels + 1 if inferred_tacho >= 2 else (self.num_channels if inferred_tacho >= 1 else None)
@@ -918,16 +951,11 @@ class TabularViewFeature:
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
                 unit = props["Unit"].lower()
                 self.raw_data[ch] = self.process_calibrated_data(values[ch], ch)
-                nyquist = self.sample_rate / 2.0
-                tap_num = 31
-                # Fixed bandpass as per spec (removed selection UI)
-                band = [50 / nyquist, 200 / nyquist]
-                low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
-                high_pass_coeffs = signal.firwin(tap_num, 200 / nyquist, window='hamming', pass_zero=False)
-                band_pass_coeffs = signal.firwin(tap_num, band, window='hamming', pass_zero=False)
-                self.low_pass_data[ch] = signal.lfilter(low_pass_coeffs, 1.0, self.raw_data[ch])
-                self.high_pass_data[ch] = signal.lfilter(high_pass_coeffs, 1.0, self.raw_data[ch])
-                self.band_pass_data[ch] = signal.lfilter(band_pass_coeffs, 1.0, self.raw_data[ch])
+                # Ensure cached FIR coefficients for current rate
+                self._ensure_filters()
+                self.low_pass_data[ch] = signal.lfilter(self._low_pass_coeffs, 1.0, self.raw_data[ch])
+                self.high_pass_data[ch] = signal.lfilter(self._high_pass_coeffs, 1.0, self.raw_data[ch])
+                self.band_pass_data[ch] = signal.lfilter(self._band_pass_coeffs, 1.0, self.raw_data[ch])
 
                 # Segment-based calculations between triggers
                 direct_ptps, bandpass_ptps = [], []
@@ -1011,10 +1039,27 @@ class TabularViewFeature:
                 }
                 self.update_table_row(ch, channel_data)
             QTimer.singleShot(0, self.update_plots)
-            if self.console:
+            if self.console and (datetime.now() - self._last_log_time).total_seconds() >= self._log_interval_sec:
                 self.console.append_to_console(f"Processed buffered data for frame {frame_index}, mains={self.num_channels}, tacho={inferred_tacho}")
+                self._last_log_time = datetime.now()
         except Exception as ex:
             self.log_and_set_status(f"Error processing buffered data for frame {frame_index}: {str(ex)}")
+
+    def _ensure_filters(self):
+        """Compute and cache FIR coefficients for the current sample rate."""
+        try:
+            if self._last_filter_rate == self.sample_rate and self._low_pass_coeffs is not None:
+                return
+            nyquist = max(1.0, float(self.sample_rate) / 2.0)
+            tap_num = 31
+            band = [50 / nyquist, 200 / nyquist]
+            # Cache coefficients
+            self._low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
+            self._high_pass_coeffs = signal.firwin(tap_num, 200 / nyquist, window='hamming', pass_zero=False)
+            self._band_pass_coeffs = signal.firwin(tap_num, band, window='hamming', pass_zero=False)
+            self._last_filter_rate = self.sample_rate
+        except Exception as ex:
+            self.log_and_set_status(f"Error computing filter coefficients: {str(ex)}")
 
     def load_selected_frame(self, payload: dict):
         try:
@@ -1198,7 +1243,8 @@ class TabularViewFeature:
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch+1}"
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
                 unit = props["Unit"].lower()
-                direct_values = [np.ptp(self.raw_data[ch])] if np.any(self.raw_data[ch]) else []
+                subunit = (props.get("Subunit") or "pk-pk").lower()
+                direct_values = [self._convert_ptp_by_subunit(np.ptp(self.raw_data[ch]), subunit)] if np.any(self.raw_data[ch]) else []
                 channel_data = {
                     "Channel Name": channel_name,
                     "Unit": unit,
@@ -1206,7 +1252,7 @@ class TabularViewFeature:
                     "RPM": f"{int(round(self.average_frequency[ch] * 60.0))}" if self.average_frequency[ch] > 0 else "0",
                     "Gap": (f"{float(self.gap_voltages[ch]):.2f}" if isinstance(self.gap_voltages, (list, tuple)) and ch < len(self.gap_voltages) and self.gap_voltages[ch] is not None else "0.00"),
                     "Direct": self.format_direct_bandpass_value(np.mean(direct_values) if direct_values else 0.0, unit),
-                    "Bandpass": self.format_direct_bandpass_value(self.band_pass_peak_to_peak[ch], unit),
+                    "Bandpass": self.format_direct_bandpass_value(self._convert_ptp_by_subunit(self.band_pass_peak_to_peak[ch], subunit), unit),
                     "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
                     "1xP": f"{np.mean(self.one_x_phases[ch]):.0f}°" if self.one_x_phases[ch] else "0.00",
                     "2xA": self.format_direct_value([np.mean(self.two_x_amps[ch])], unit) if self.two_x_amps[ch] else "0.00",
@@ -1215,12 +1261,16 @@ class TabularViewFeature:
                     "NXPhase": f"{np.mean(self.three_x_phases[ch]):.0f}°" if self.three_x_phases[ch] else "0.00"
                 }
                 self.update_table_row(ch, channel_data)
-            # After bulk updates, adjust rows and table height
-            self.table.resizeRowsToContents()
-            self.adjust_table_height()
+            # After bulk updates, adjust rows and table height with throttling
+            now = datetime.now()
+            if (now - self._last_table_resize).total_seconds() >= self._table_resize_interval_sec:
+                self.table.resizeRowsToContents()
+                self.adjust_table_height()
+                self._last_table_resize = now
             # Do not update plots (disabled)
-            if self.console:
+            if self.console and (datetime.now() - self._last_log_time).total_seconds() >= self._log_interval_sec:
                 self.console.append_to_console(f"Updated display for all {self.num_channels} channels")
+                self._last_log_time = datetime.now()
         except Exception as ex:
             self.log_and_set_status(f"Error in update_display: {str(ex)}")
 

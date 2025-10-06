@@ -119,6 +119,7 @@ class Database:
                     "type": "Displacement",
                     "sensitivity": "1.0",
                     "unit": "mil",
+                    "subunit": "pk-pk",
                     "correctionValue": "",
                     "gain": "",
                     "unitType": "",
@@ -133,6 +134,11 @@ class Database:
                 if channel["unit"].lower().strip() not in valid_units:
                     logging.error(f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}")
                     return False, f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}"
+                # Validate subunit
+                valid_subunits = ["pk-pk", "pk", "rms"]
+                if str(channel.get("subunit", "pk-pk")).lower().strip() not in valid_subunits:
+                    logging.error(f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}")
+                    return False, f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}"
                 self._calculate_channel_properties(channel)
 
         project_data = {
@@ -273,6 +279,7 @@ class Database:
                         "type": "Displacement",
                         "sensitivity": "1.0",
                         "unit": "mil",
+                        "subunit": "pk-pk",
                         "correctionValue": "",
                         "gain": "",
                         "unitType": "",
@@ -286,6 +293,10 @@ class Database:
                     if channel["unit"].lower().strip() not in valid_units:
                         logging.error(f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}")
                         return False, f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}"
+                    valid_subunits = ["pk-pk", "pk", "rms"]
+                    if str(channel.get("subunit", "pk-pk")).lower().strip() not in valid_subunits:
+                        logging.error(f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}")
+                        return False, f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}"
                     self._calculate_channel_properties(channel)
             update_data["models"] = updated_models
             logging.debug(f"Updating project with new models: {len(updated_models)} models")

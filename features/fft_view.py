@@ -222,13 +222,21 @@ class FFTViewFeature:
         lines_label = QLabel("Number of Lines")
         lines_label.setStyleSheet("font-size: 14px;")
         settings_layout.addWidget(lines_label, 4, 0)
-        lines_edit = QLineEdit(str(self.settings.number_of_lines))
-        lines_edit.setValidator(QIntValidator(100, 3200))
-        lines_edit.setStyleSheet("""
-        QLineEdit { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
+        lines_combo = QComboBox()
+        lines_combo.addItems(["400", "800", "1600", "3200", "6400"])
+        # Ensure current matches settings; fall back to 1600 if not present
+        try:
+            if str(self.settings.number_of_lines) in ["400", "800", "1600", "3200", "6400"]:
+                lines_combo.setCurrentText(str(self.settings.number_of_lines))
+            else:
+                lines_combo.setCurrentText("1600")
+        except Exception:
+            lines_combo.setCurrentText("1600")
+        lines_combo.setStyleSheet("""
+        QComboBox { padding: 5px; border: 1px solid #d0d0d0; border-radius: 4px; background-color: white; min-width: 100px; }
         """)
-        settings_layout.addWidget(lines_edit, 4, 1)
-        self.settings_widgets["NumberOfLines"] = lines_edit
+        settings_layout.addWidget(lines_combo, 4, 1)
+        self.settings_widgets["NumberOfLines"] = lines_combo
 
         overlap_label = QLabel("Overlap Percentage (%)")
         overlap_label.setStyleSheet("font-size: 14px;")
@@ -492,7 +500,10 @@ class FFTViewFeature:
             self.settings_widgets["WindowType"].setCurrentText(self.settings.window_type)
             self.settings_widgets["StartFrequency"].setText(str(self.settings.start_frequency))
             self.settings_widgets["StopFrequency"].setText(str(self.settings.stop_frequency))
-            self.settings_widgets["NumberOfLines"].setText(str(self.settings.number_of_lines))
+            try:
+                self.settings_widgets["NumberOfLines"].setCurrentText(str(self.settings.number_of_lines))
+            except Exception:
+                pass
             self.settings_widgets["OverlapPercentage"].setText(str(self.settings.overlap_percentage))
             self.settings_widgets["AveragingMode"].setCurrentText(self.settings.averaging_mode)
             self.settings_widgets["NumberOfAverages"].setText(str(self.settings.number_of_averages))
@@ -508,7 +519,11 @@ class FFTViewFeature:
             self.settings.window_type = self.settings_widgets["WindowType"].currentText()
             self.settings.start_frequency = float(self.settings_widgets["StartFrequency"].text() or 10.0)
             self.settings.stop_frequency = float(self.settings_widgets["StopFrequency"].text() or 2000.0)
-            self.settings.number_of_lines = int(self.settings_widgets["NumberOfLines"].text() or 1600)
+            # Number of Lines from dropdown
+            try:
+                self.settings.number_of_lines = int(self.settings_widgets["NumberOfLines"].currentText())
+            except Exception:
+                self.settings.number_of_lines = 1600
             self.settings.overlap_percentage = float(self.settings_widgets["OverlapPercentage"].text() or 0.0)
             self.settings.averaging_mode = self.settings_widgets["AveragingMode"].currentText()
             self.settings.number_of_averages = int(self.settings_widgets["NumberOfAverages"].text() or 10)
@@ -522,10 +537,14 @@ class FFTViewFeature:
                 self.settings_widgets["StopFrequency"].setText(str(self.settings.stop_frequency))
                 self.log_and_set_status("Invalid frequency range, reset to defaults.")
 
-            if self.settings.number_of_lines < 100 or self.settings.number_of_lines > 3200:
+            allowed_lines = {400, 800, 1600, 3200, 6400}
+            if self.settings.number_of_lines not in allowed_lines:
                 self.settings.number_of_lines = 1600
-                self.settings_widgets["NumberOfLines"].setText(str(self.settings.number_of_lines))
-                self.log_and_set_status("Invalid number of lines, reset to default.")
+                try:
+                    self.settings_widgets["NumberOfLines"].setCurrentText(str(self.settings.number_of_lines))
+                except Exception:
+                    pass
+                self.log_and_set_status("Invalid number of lines, reset to 1600.")
 
             if self.settings.overlap_percentage < 0 or self.settings.overlap_percentage > 99.9:
                 self.settings.overlap_percentage = 0.0
@@ -552,7 +571,10 @@ class FFTViewFeature:
         self.settings_widgets["WindowType"].setCurrentText(self.settings.window_type)
         self.settings_widgets["StartFrequency"].setText(str(self.settings.start_frequency))
         self.settings_widgets["StopFrequency"].setText(str(self.settings.stop_frequency))
-        self.settings_widgets["NumberOfLines"].setText(str(self.settings.number_of_lines))
+        try:
+            self.settings_widgets["NumberOfLines"].setCurrentText(str(self.settings.number_of_lines))
+        except Exception:
+            pass
         self.settings_widgets["OverlapPercentage"].setText(str(self.settings.overlap_percentage))
         self.settings_widgets["AveragingMode"].setCurrentText(self.settings.averaging_mode)
         self.settings_widgets["NumberOfAverages"].setText(str(self.settings.number_of_averages))

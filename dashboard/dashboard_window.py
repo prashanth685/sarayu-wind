@@ -568,6 +568,16 @@ class DashboardWindow(QWidget):
                     self.mqtt_handler.gap_values_received.connect(self.on_gap_values)
                 except Exception:
                     pass
+                # IMPORTANT: register all already-open features so routing works even if user connects after opening windows
+                try:
+                    for key in list(self.feature_instances.keys()):
+                        feat_name, mdl_name, ch_name, _uid = key
+                        try:
+                            self.mqtt_handler.add_active_feature(feat_name, mdl_name, ch_name)
+                        except Exception:
+                            pass
+                except Exception:
+                    logging.error("Failed to register existing features with MQTT handler")
                 self.mqtt_handler.start()
                 logging.info(f"MQTT setup initiated for project: {self.current_project}")
                 self.console.append_to_console(f"MQTT setup initiated for project: {self.current_project}")
