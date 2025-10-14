@@ -232,13 +232,6 @@ class TimeViewFeature:
 
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
-        # self.scroll_area.setStyleSheet("""
-        # QScrollArea { border-radius: 8px; padding: 5px; }
-        # QScrollBar:vertical { background: white; width: 10px; margin: 0px; border-radius: 5px; }
-        # QScrollBar::handle:vertical { background: black; border-radius: 5px; }
-        # QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }
-        # QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
-        # """)
         self.scroll_area.setStyleSheet("""
             QScrollArea {
                 border-radius: 8px;
@@ -262,13 +255,12 @@ class TimeViewFeature:
                 background: none;
             }
         """)
-
         self.scroll_content = QWidget()
         self.scroll_layout = QVBoxLayout(self.scroll_content)
         # Add vertical spacing and outer margins between stacked plots for visual separation
         self.scroll_layout.setSpacing(24)
         self.scroll_layout.setContentsMargins(10, 10, 10, 14)
-        self.scroll_content.setStyleSheet("background-color: white; border-radius: 5px; padding: 10px;")
+        self.scroll_content.setStyleSheet("background-color: #ebeef2; border-radius: 5px; padding: 10px;")
         self.scroll_area.setWidget(self.scroll_content)
 
         # Content area: plots on the left, settings sidebar on the right
@@ -310,7 +302,6 @@ class TimeViewFeature:
                         self.channel_properties[channel_name] = {
                             "type": channel.get("type", "Displacement"),
                             "unit": channel.get("unit", "mil").lower(),
-                            "subunit": str(channel.get("subunit", "pk-pk")).lower(),
                             "correctionValue": float(channel.get("correctionValue", "1.0") or "1.0"),
                             "gain": float(channel.get("gain", "1.0") or "1.0"),
                             "sensitivity": float(channel.get("sensitivity", "1.0") or "1.0"),
@@ -352,7 +343,7 @@ class TimeViewFeature:
         for i in range(self.num_plots):
             # Wrap each plot in its own container to create consistent visual gaps
             plot_container = QWidget()
-            plot_container.setStyleSheet("background-color: white; border-radius: 6px;")
+            plot_container.setStyleSheet("background-color: #ebeef2; border-radius: 6px;")
             container_layout = QVBoxLayout(plot_container)
             container_layout.setContentsMargins(6, 6, 6, 12)
             container_layout.setSpacing(4)
@@ -360,7 +351,7 @@ class TimeViewFeature:
             plot_widget = PlotWidget()
             # Increased plot height for better visibility
             plot_widget.setMinimumHeight(280)
-            plot_widget.setBackground('white')
+            plot_widget.setBackground('#ebeef2')
             plot_widget.showGrid(x=True, y=True)
             plot_widget.addLegend()
 
@@ -414,10 +405,8 @@ class TimeViewFeature:
             self.scroll_layout.addWidget(plot_container)
 
             channel_name = self.channel_names[i] if i < len(self.channel_names) else f"Channel {i + 1}"
-            props = self.channel_properties.get(channel_name, {})
-            unit = props.get("unit", "mil")
-            subunit = props.get("subunit", "pk-pk")
-            y_label = f"{unit} - {subunit}" if i < self.main_channels else "Value"
+            unit = self.channel_properties.get(channel_name, {}).get("unit", "mil")
+            y_label = f"{unit}" if i < self.main_channels else "Value"
 
             if i < self.main_channels:
                 # Set label for main channels (bold and larger size)

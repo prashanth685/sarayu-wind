@@ -113,15 +113,12 @@ class TabularViewFeature:
         self.one_x_phases = [[]]
         self.two_x_amps = [[]]
         self.two_x_phases = [[]]
-        self.three_x_amps = [[]]
-        self.three_x_phases = [[]]
         self.start_time = datetime.now()
         # Use keys that match the table header labels for consistency
         self.column_visibility = {
             "Channel Name": True, "Unit": True, "DateTime": True, "RPM": True, "Gap": True,
             "Direct": True, "Bandpass": True, "1xAmp": True, "1xPhase": True, "2xAmp": True,
-            "2xPhase": True, "NX1Amp": True, "NX1Phase": True, "NX2Amp": True, "NX2Phase": True,
-            "NX3Amp": True, "NX3Phase": True
+            "2xPhase": True, "NXAmp": True, "NXPhase": True
         }
         self.plot_initialized = False
         self.table = None
@@ -148,24 +145,13 @@ class TabularViewFeature:
         self.internal_headers = [
             "Channel Name", "Unit", "DateTime", "RPM", "Gap", "Direct", "Bandpass",
             "1xAmp", "1xPhase", "2xAmp", "2xPhase",
-            "NX1Amp", "NX1Phase", "NX2Amp", "NX2Phase", "NX3Amp", "NX3Phase"
+            "NXAmp", "NXPhase"
         ]
-        self.custom_nx_amp_header = "NXAmp"
-        self.custom_nx_phase_header = "NXPhase"
-        # NX harmonic selections
-        # Legacy single selection (kept for backward compatibility)
-        self.nx_amp_selection = 3
-        self.nx_phase_selection = 3
-        # New: three independent NX selections and headers
-        self.nx1_selection = 1.0
-        self.nx2_selection = 2.0
-        self.nx3_selection = 3.0
-        self.custom_nx1_amp_header = f"{self.nx1_selection}xAmp"
-        self.custom_nx1_phase_header = f"{self.nx1_selection}xPhase"
-        self.custom_nx2_amp_header = f"{self.nx2_selection}xAmp"
-        self.custom_nx2_phase_header = f"{self.nx2_selection}xPhase"
-        self.custom_nx3_amp_header = f"{self.nx3_selection}xAmp"
-        self.custom_nx3_phase_header = f"{self.nx3_selection}xPhase"
+        # Display headers for NX will be dynamic (e.g., NxAmp(0.25))
+        self.custom_nx_amp_header = "NxAmp(3)"
+        self.custom_nx_phase_header = "NxPhase(3)"
+        # Single NX harmonic selection
+        self.nx_selection = 3.0
         # Performance: cache filter coefficients and throttle expensive UI ops
         self._last_filter_rate = None
         self._low_pass_coeffs = None
@@ -184,17 +170,11 @@ class TabularViewFeature:
         self.initialize_thread()
 
     def get_display_headers(self):
-        """Return header labels for display; include selected NX values (e.g., NX1 3x Amp)."""
-        sel1 = self._format_nx_value(self.nx1_selection)
-        sel2 = self._format_nx_value(self.nx2_selection)
-        sel3 = self._format_nx_value(self.nx3_selection)
+        """Return header labels for display; include selected NX value as NxAmp(v) and NxPhase(v)."""
+        sel = self._format_nx_value(self.nx_selection)
         mapping = {
-            "NX1Amp": f"NX1 {sel1}x Amp",
-            "NX1Phase": f"NX1 {sel1}x Phase",
-            "NX2Amp": f"NX2 {sel2}x Amp",
-            "NX2Phase": f"NX2 {sel2}x Phase",
-            "NX3Amp": f"NX3 {sel3}x Amp",
-            "NX3Phase": f"NX3 {sel3}x Phase",
+            "NXAmp": f"NxAmp({sel})",
+            "NXPhase": f"NxPhase({sel})",
         }
         headers = [mapping.get(key, key) for key in self.internal_headers]
         return headers
@@ -204,35 +184,20 @@ class TabularViewFeature:
         try:
             if self.table:
                 self.table.setHorizontalHeaderLabels(self.get_display_headers())
-            # Update checkbox labels but keep internal keys in the dict
+                # Keep columns stable when headers change
+                try:
+                    self._apply_fixed_column_widths()
+                except Exception:
+                    pass
+            # Update checkbox labels for NX columns
             try:
-                if "NX1Amp" in self.checkbox_dict and self.checkbox_dict["NX1Amp"]:
-                    self.checkbox_dict["NX1Amp"].setText(f"NX1 {self._format_nx_value(self.nx1_selection)}x Amp")
+                if "NXAmp" in self.checkbox_dict and self.checkbox_dict["NXAmp"]:
+                    self.checkbox_dict["NXAmp"].setText(f"NxAmp({self._format_nx_value(self.nx_selection)})")
             except Exception:
                 pass
             try:
-                if "NX1Phase" in self.checkbox_dict and self.checkbox_dict["NX1Phase"]:
-                    self.checkbox_dict["NX1Phase"].setText(f"NX1 {self._format_nx_value(self.nx1_selection)}x Phase")
-            except Exception:
-                pass
-            try:
-                if "NX2Amp" in self.checkbox_dict and self.checkbox_dict["NX2Amp"]:
-                    self.checkbox_dict["NX2Amp"].setText(f"NX2 {self._format_nx_value(self.nx2_selection)}x Amp")
-            except Exception:
-                pass
-            try:
-                if "NX2Phase" in self.checkbox_dict and self.checkbox_dict["NX2Phase"]:
-                    self.checkbox_dict["NX2Phase"].setText(f"NX2 {self._format_nx_value(self.nx2_selection)}x Phase")
-            except Exception:
-                pass
-            try:
-                if "NX3Amp" in self.checkbox_dict and self.checkbox_dict["NX3Amp"]:
-                    self.checkbox_dict["NX3Amp"].setText(f"NX3 {self._format_nx_value(self.nx3_selection)}x Amp")
-            except Exception:
-                pass
-            try:
-                if "NX3Phase" in self.checkbox_dict and self.checkbox_dict["NX3Phase"]:
-                    self.checkbox_dict["NX3Phase"].setText(f"NX3 {self._format_nx_value(self.nx3_selection)}x Phase")
+                if "NXPhase" in self.checkbox_dict and self.checkbox_dict["NXPhase"]:
+                    self.checkbox_dict["NXPhase"].setText(f"NxPhase({self._format_nx_value(self.nx_selection)})")
             except Exception:
                 pass
         except Exception:
@@ -250,19 +215,19 @@ class TabularViewFeature:
     def on_nx_selection_changed(self, _text=None):
         """Keep table headers and checkbox labels in sync with live NX dropdown changes."""
         try:
-            if hasattr(self, 'nx1_input') and self.nx1_input:
-                self.nx1_selection = float(self.nx1_input.currentText())
-            if hasattr(self, 'nx2_input') and self.nx2_input:
-                self.nx2_selection = float(self.nx2_input.currentText())
-            if hasattr(self, 'nx3_input') and self.nx3_input:
-                self.nx3_selection = float(self.nx3_input.currentText())
+            # Prefer amp combo, else phase combo
+            if hasattr(self, 'nx_input_amp') and self.nx_input_amp:
+                self.nx_selection = float(self.nx_input_amp.currentText())
+            elif hasattr(self, 'nx_input_phase') and self.nx_input_phase:
+                self.nx_selection = float(self.nx_input_phase.currentText())
         except Exception:
             pass
         # Update headers and checkbox labels
         self.apply_custom_headers()
         # Resize headers to fit new text
+        # Recompute widths based on visibility change
         try:
-            self.table.resizeColumnsToContents()
+            self._maybe_resize_columns(force=True)
         except Exception:
             pass
 
@@ -333,27 +298,10 @@ class TabularViewFeature:
         title.setObjectName("settingsTitle")
         settings_layout.addWidget(title, 0, 0, 1, 3)
 
-        # NX Harmonic selections: dropdowns for NX1, NX2, NX3
+        # NX harmonic allowed values (dropdown will be inlined with NXAmp/NXPhase rows)
         self._nx_allowed_values = ["0.25","0.47","0.48","0.5","0.75","1","2","3","4","5","6","7","8","9","10"]
-        nx1_label = QLabel("NX1 Harmonic:")
-        self.nx1_input = QComboBox(); self.nx1_input.addItems(self._nx_allowed_values)
-        self.nx1_input.setCurrentText(self._format_nx_value(self.nx1_selection))
-        self.nx1_input.currentTextChanged.connect(self.on_nx_selection_changed)
-        nx2_label = QLabel("NX2 Harmonic:")
-        self.nx2_input = QComboBox(); self.nx2_input.addItems(self._nx_allowed_values)
-        self.nx2_input.setCurrentText(self._format_nx_value(self.nx2_selection))
-        self.nx2_input.currentTextChanged.connect(self.on_nx_selection_changed)
-        nx3_label = QLabel("NX3 Harmonic:")
-        self.nx3_input = QComboBox(); self.nx3_input.addItems(self._nx_allowed_values)
-        self.nx3_input.setCurrentText(self._format_nx_value(self.nx3_selection))
-        self.nx3_input.currentTextChanged.connect(self.on_nx_selection_changed)
-        # Place NX rows compactly
-        settings_layout.addWidget(nx1_label, 1, 0)
-        settings_layout.addWidget(self.nx1_input, 1, 1)
-        settings_layout.addWidget(nx2_label, 2, 0)
-        settings_layout.addWidget(self.nx2_input, 2, 1)
-        settings_layout.addWidget(nx3_label, 3, 0)
-        settings_layout.addWidget(self.nx3_input, 3, 1)
+        self.nx_input_amp = None
+        self.nx_input_phase = None
 
         # Use internal headers for visibility keys; display text for NX columns will be customized
         headers = list(self.internal_headers)
@@ -370,29 +318,61 @@ class TabularViewFeature:
             # Create checkboxes for visibility; for NX columns use current custom labels but key them by internal name
             display_text = header
             key = header
-            if header == "NX1Amp":
-                display_text = self.custom_nx1_amp_header or header
-            elif header == "NX1Phase":
-                display_text = self.custom_nx1_phase_header or header
-            elif header == "NX2Amp":
-                display_text = self.custom_nx2_amp_header or header
-            elif header == "NX2Phase":
-                display_text = self.custom_nx2_phase_header or header
-            elif header == "NX3Amp":
-                display_text = self.custom_nx3_amp_header or header
-            elif header == "NX3Phase":
-                display_text = self.custom_nx3_phase_header or header
-            cb = QCheckBox(display_text)
-            cb.setChecked(self.column_visibility.get(key, True))
-            cb.setStyleSheet("font-size: 14px;")
-            # Immediate apply on toggle
-            cb.toggled.connect(lambda checked, h=key: self.on_column_toggle(h, checked))
-            self.checkbox_dict[key] = cb
-            opts_layout.addWidget(cb)
+            if header == "NXAmp":
+                display_text = f"NxAmp({self._format_nx_value(self.nx_selection)})"
+            elif header == "NXPhase":
+                display_text = f"NxPhase({self._format_nx_value(self.nx_selection)})"
+
+            if header in ("NXAmp", "NXPhase"):
+                # Inline container with checkbox and harmonic dropdown on the same line
+                row_container = QWidget()
+                row_layout = QHBoxLayout(row_container)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                row_layout.setSpacing(8)
+                cb = QCheckBox(display_text)
+                cb.setChecked(self.column_visibility.get(key, True))
+                cb.setStyleSheet("font-size: 14px;")
+                cb.toggled.connect(lambda checked, h=key: self.on_column_toggle(h, checked))
+                self.checkbox_dict[key] = cb
+                row_layout.addWidget(cb)
+
+                combo = QComboBox()
+                combo.addItems(self._nx_allowed_values)
+                combo.setCurrentText(self._format_nx_value(self.nx_selection))
+                combo.setFixedWidth(80)
+                combo.currentTextChanged.connect(self.on_nx_selection_changed)
+                # Keep two combos in sync if both exist
+                def _sync_combo(text, which=key):
+                    try:
+                        if which == "NXAmp" and self.nx_input_phase and self.nx_input_phase.currentText() != text:
+                            self.nx_input_phase.blockSignals(True)
+                            self.nx_input_phase.setCurrentText(text)
+                            self.nx_input_phase.blockSignals(False)
+                        if which == "NXPhase" and self.nx_input_amp and self.nx_input_amp.currentText() != text:
+                            self.nx_input_amp.blockSignals(True)
+                            self.nx_input_amp.setCurrentText(text)
+                            self.nx_input_amp.blockSignals(False)
+                    except Exception:
+                        pass
+                combo.currentTextChanged.connect(_sync_combo)
+                if header == "NXAmp":
+                    self.nx_input_amp = combo
+                else:
+                    self.nx_input_phase = combo
+                row_layout.addWidget(combo)
+                row_layout.addStretch()
+                opts_layout.addWidget(row_container)
+            else:
+                cb = QCheckBox(display_text)
+                cb.setChecked(self.column_visibility.get(key, True))
+                cb.setStyleSheet("font-size: 14px;")
+                cb.toggled.connect(lambda checked, h=key: self.on_column_toggle(h, checked))
+                self.checkbox_dict[key] = cb
+                opts_layout.addWidget(cb)
         opts_layout.addStretch()
         opts_scroll.setWidget(opts_container)
         # Place the options scroll area below NX rows
-        opts_row = 4
+        opts_row = 1
         settings_layout.addWidget(opts_scroll, opts_row, 0, 1, 3)
 
         self.save_settings_button = QPushButton("Save")
@@ -456,29 +436,50 @@ class TabularViewFeature:
                 gridline-color: #e0e6ef;
             }
             QTableWidget::item {
-                padding: 6px 10px; /* increase padding */
+                padding: 10px 14px; /* increased padding for breathing room */
             }
             QHeaderView::section {
                 background-color: #2196F3; /* blue */
                 color: #ffffff; /* white font */
-                padding: 8px 10px;
+                padding: 10px 14px; /* increased header padding */
                 border: 1px solid #1976d2; /* darker blue border */
                 font-weight: 700;
                 font-size: 15px;
             }
         """)
+        # Ensure all cell texts (especially DateTime) stay on a single line
+        self.table.setWordWrap(False)
+        try:
+            header = self.table.horizontalHeader()
+            header.setDefaultAlignment(Qt.AlignCenter)
+            # Prevent header text from being elided with "..."
+            from PyQt5.QtCore import Qt as _Qt
+            header.setTextElideMode(_Qt.ElideNone)
+        except Exception:
+            pass
         # Default: remove internal vertical scrollbar; allow horizontal scroll for many columns
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        # Header resize behavior: fit contents so columns remain readable
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
-        # Fill any remaining space to avoid empty gaps
-        self.table.horizontalHeader().setStretchLastSection(True)
+        # Header resize behavior: interactive; we set fixed widths per column
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        # Ensure a comfortable minimum width for all columns
+        try:
+            self.table.horizontalHeader().setMinimumSectionSize(100)
+        except Exception:
+            pass
+        # Do not stretch last section; allow horizontal scroll so fixed widths stay intact
+        self.table.horizontalHeader().setStretchLastSection(False)
         self.table.verticalHeader().setVisible(False)
-        self.table.verticalHeader().setDefaultSectionSize(32)  # increase row height
+        self.table.verticalHeader().setDefaultSectionSize(36)  # slightly taller rows for padding
         # Size policy: expand horizontally, fixed vertically (we control height)
         self.table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Do not add table directly to main layout; add to left container later
+
+        # Keep Unit column constant width to avoid jumping
+        try:
+            self._maybe_resize_columns(force=True)
+        except Exception:
+            pass
 
         self.table_initialized = True
         if self.console:
@@ -588,6 +589,17 @@ class TabularViewFeature:
         unit = self.channel_properties.get(channel_name, {"Unit": "mil"})["Unit"].lower()
         return unit
 
+    def _format_unit_display(self, channel_name: str) -> str:
+        """Return formatted unit text as unit(subunit), e.g., mil(pk)."""
+        try:
+            props = self.channel_properties.get(channel_name, {})
+            unit = str(props.get("Unit", "mil") or "mil").lower().strip()
+            sub = str(props.get("Subunit", "pk-pk") or "pk-pk").lower().strip()
+            # Always show as unit(subunit)
+            return f"{unit}({sub})" if sub else unit
+        except Exception:
+            return "mil(pk-pk)"
+
     def initialize_data_arrays(self):
         self.raw_data = [np.zeros(4096) for _ in range(self.num_channels)]
         self.low_pass_data = [np.zeros(4096) for _ in range(self.num_channels)]
@@ -601,13 +613,9 @@ class TabularViewFeature:
         self.one_x_phases = [[] for _ in range(self.num_channels)]
         self.two_x_amps = [[] for _ in range(self.num_channels)]
         self.two_x_phases = [[] for _ in range(self.num_channels)]
-        # NX1/NX2/NX3 arrays
-        self.nx1_amps = [[] for _ in range(self.num_channels)]
-        self.nx1_phases = [[] for _ in range(self.num_channels)]
-        self.nx2_amps = [[] for _ in range(self.num_channels)]
-        self.nx2_phases = [[] for _ in range(self.num_channels)]
-        self.nx3_amps = [[] for _ in range(self.num_channels)]
-        self.nx3_phases = [[] for _ in range(self.num_channels)]
+        # Single NX arrays
+        self.nx_amps = [[] for _ in range(self.num_channels)]
+        self.nx_phases = [[] for _ in range(self.num_channels)]
         self.time_points = np.arange(4096) / self.sample_rate
         if self.console:
             self.console.append_to_console(f"Initialized data arrays for {self.num_channels} channels: {self.channel_names}")
@@ -623,15 +631,15 @@ class TabularViewFeature:
         self.table.setRowCount(self.num_channels)
         for row in range(self.num_channels):
             channel_name = self.channel_names[row] if row < len(self.channel_names) else f"Channel {row+1}"
-            unit = self.channel_properties.get(channel_name, {"Unit": "mil"})["Unit"].lower()
-            logging.debug(f"Setting unit for channel {channel_name}: {unit}")
+            unit_display = self._format_unit_display(channel_name)
+            logging.debug(f"Setting unit for channel {channel_name}: {unit_display}")
             default_data = {
                 "Channel Name": channel_name,
-                "Unit": unit,
+                "Unit": unit_display,
                 "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                 "RPM": "0.00", "Gap": "0.00", "Direct": "0.00", "Bandpass": "0.00",
                 "1xAmp": "0.00", "1xPhase": "0.00", "2xAmp": "0.00", "2xPhase": "0.00",
-                "NX1Amp": "0.00", "NX1Phase": "0.00", "NX2Amp": "0.00", "NX2Phase": "0.00", "NX3Amp": "0.00", "NX3Phase": "0.00"
+                "NXAmp": "0.00", "NXPhase": "0.00"
             }
             for col, internal in enumerate(headers):
                 item = QTableWidgetItem(default_data[internal])
@@ -645,6 +653,11 @@ class TabularViewFeature:
         self.table.resizeRowsToContents()
         self.adjust_table_height()
         self.update_column_visibility()
+        # Initial content-aware sizing
+        try:
+            self._maybe_resize_columns(force=True)
+        except Exception:
+            pass
         if self.console:
             self.console.append_to_console(f"Updated table defaults with units for {self.num_channels} channels: {self.channel_names}")
 
@@ -677,23 +690,11 @@ class TabularViewFeature:
             settings_collection = database.get_collection("TabularViewSettings")
             setting = settings_collection.find_one({"projectId": self.project_id}, sort=[("updated_at", -1)])
             if setting:
-                # Load NX selections; fallback to legacy nxAmpSelection if provided
+                # Load NX selection; fallback to legacy nxAmpSelection if provided
                 try:
-                    self.nx1_selection = float(setting.get("nx1Selection", self.nx1_selection))
+                    self.nx_selection = float(setting.get("nxSelection", setting.get("nx3Selection", setting.get("nxAmpSelection", self.nx_selection))))
                 except Exception:
                     pass
-                try:
-                    self.nx2_selection = float(setting.get("nx2Selection", self.nx2_selection))
-                except Exception:
-                    pass
-                try:
-                    self.nx3_selection = float(setting.get("nx3Selection", setting.get("nxAmpSelection", self.nx3_selection)))
-                except Exception:
-                    pass
-                # Update custom headers for NX1..NX3
-                self.custom_nx1_amp_header = f"{self.nx1_selection}xAmp"; self.custom_nx1_phase_header = f"{self.nx1_selection}xPhase"
-                self.custom_nx2_amp_header = f"{self.nx2_selection}xAmp"; self.custom_nx2_phase_header = f"{self.nx2_selection}xPhase"
-                self.custom_nx3_amp_header = f"{self.nx3_selection}xAmp"; self.custom_nx3_phase_header = f"{self.nx3_selection}xPhase"
                 # Map DB fields to UI header keys
                 self.column_visibility = {
                     "Channel Name": setting.get("channelNameVisible", True),
@@ -707,12 +708,8 @@ class TabularViewFeature:
                     "1xPhase": setting.get("oneXpVisible", True),
                     "2xAmp": setting.get("twoXaVisible", True),
                     "2xPhase": setting.get("twoXpVisible", True),
-                    "NX1Amp": setting.get("nx1AmpVisible", True),
-                    "NX1Phase": setting.get("nx1PhaseVisible", True),
-                    "NX2Amp": setting.get("nx2AmpVisible", True),
-                    "NX2Phase": setting.get("nx2PhaseVisible", True),
-                    "NX3Amp": setting.get("nx3AmpVisible", True),
-                    "NX3Phase": setting.get("nx3PhaseVisible", True),
+                    "NXAmp": setting.get("nxAmpVisible", True),
+                    "NXPhase": setting.get("nxPhaseVisible", True),
                 }
                 # Refresh checkbox labels and states
                 self.apply_custom_headers()
@@ -720,12 +717,14 @@ class TabularViewFeature:
                     cb.setChecked(self.column_visibility.get(header, True))
                 # Update inputs if present
                 try:
-                    if hasattr(self, 'nx1_input') and self.nx1_input:
-                        self.nx1_input.setCurrentText(self._format_nx_value(self.nx1_selection))
-                    if hasattr(self, 'nx2_input') and self.nx2_input:
-                        self.nx2_input.setCurrentText(self._format_nx_value(self.nx2_selection))
-                    if hasattr(self, 'nx3_input') and self.nx3_input:
-                        self.nx3_input.setCurrentText(self._format_nx_value(self.nx3_selection))
+                    if hasattr(self, 'nx_input_amp') and self.nx_input_amp:
+                        self.nx_input_amp.blockSignals(True)
+                        self.nx_input_amp.setCurrentText(self._format_nx_value(self.nx_selection))
+                        self.nx_input_amp.blockSignals(False)
+                    if hasattr(self, 'nx_input_phase') and self.nx_input_phase:
+                        self.nx_input_phase.blockSignals(True)
+                        self.nx_input_phase.setCurrentText(self._format_nx_value(self.nx_selection))
+                        self.nx_input_phase.blockSignals(False)
                 except Exception:
                     pass
             self.update_column_visibility()
@@ -738,18 +737,14 @@ class TabularViewFeature:
                 self.column_visibility[header] = cb.isChecked()
             # Read harmonic selections from dropdowns
             try:
-                if hasattr(self, 'nx1_input') and self.nx1_input:
-                    self.nx1_selection = float(self.nx1_input.currentText())
-                if hasattr(self, 'nx2_input') and self.nx2_input:
-                    self.nx2_selection = float(self.nx2_input.currentText())
-                if hasattr(self, 'nx3_input') and self.nx3_input:
-                    self.nx3_selection = float(self.nx3_input.currentText())
+                if hasattr(self, 'nx_input_amp') and self.nx_input_amp:
+                    self.nx_selection = float(self.nx_input_amp.currentText())
+                elif hasattr(self, 'nx_input_phase') and self.nx_input_phase:
+                    self.nx_selection = float(self.nx_input_phase.currentText())
             except Exception:
                 pass
             # Update headers
-            self.custom_nx1_amp_header = f"{self.nx1_selection}xAmp"; self.custom_nx1_phase_header = f"{self.nx1_selection}xPhase"
-            self.custom_nx2_amp_header = f"{self.nx2_selection}xAmp"; self.custom_nx2_phase_header = f"{self.nx2_selection}xPhase"
-            self.custom_nx3_amp_header = f"{self.nx3_selection}xAmp"; self.custom_nx3_phase_header = f"{self.nx3_selection}xPhase"
+            self.custom_nx_amp_header = f"NxAmp({self._format_nx_value(self.nx_selection)})"; self.custom_nx_phase_header = f"NxPhase({self._format_nx_value(self.nx_selection)})"
             settings = TabularViewSettings(self.project_id)
             settings.channel_name_visible = self.column_visibility["Channel Name"]
             settings.unit_visible = self.column_visibility["Unit"]
@@ -779,27 +774,17 @@ class TabularViewFeature:
                 "oneXpVisible": settings.one_xp_visible,
                 "twoXaVisible": settings.two_xa_visible,
                 "twoXpVisible": settings.two_xp_visible,
-                # NX1/NX2/NX3 visibility
-                "nx1AmpVisible": self.column_visibility.get("NX1Amp", True),
-                "nx1PhaseVisible": self.column_visibility.get("NX1Phase", True),
-                "nx2AmpVisible": self.column_visibility.get("NX2Amp", True),
-                "nx2PhaseVisible": self.column_visibility.get("NX2Phase", True),
-                "nx3AmpVisible": self.column_visibility.get("NX3Amp", True),
-                "nx3PhaseVisible": self.column_visibility.get("NX3Phase", True),
-                # Selections
-                "nx1Selection": float(self.nx1_selection),
-                "nx2Selection": float(self.nx2_selection),
-                "nx3Selection": float(self.nx3_selection),
-                # Legacy compatibility fields (map NX3)
-                "nxAmpSelection": float(self.nx3_selection),
-                "nxPhaseSelection": float(self.nx3_selection),
+                # NX visibility
+                "nxAmpVisible": self.column_visibility.get("NXAmp", True),
+                "nxPhaseVisible": self.column_visibility.get("NXPhase", True),
+                # Selection (store single)
+                "nxSelection": float(self.nx_selection),
+                # Legacy compatibility fields
+                "nxAmpSelection": float(self.nx_selection),
+                "nxPhaseSelection": float(self.nx_selection),
                 # Custom headers
-                "customNX1AmpHeader": self.custom_nx1_amp_header,
-                "customNX1PhaseHeader": self.custom_nx1_phase_header,
-                "customNX2AmpHeader": self.custom_nx2_amp_header,
-                "customNX2PhaseHeader": self.custom_nx2_phase_header,
-                "customNX3AmpHeader": self.custom_nx3_amp_header,
-                "customNX3PhaseHeader": self.custom_nx3_phase_header,
+                "customNXAmpHeader": self.custom_nx_amp_header,
+                "customNXPhaseHeader": self.custom_nx_phase_header,
                 "updated_at": settings.updated_at
             })
             self.update_column_visibility()
@@ -877,9 +862,9 @@ class TabularViewFeature:
         for col, internal in enumerate(self.internal_headers):
             hidden = not self.column_visibility.get(internal, True)
             self.table.setColumnHidden(col, hidden)
-        # After visibility changes, adjust columns to avoid leftover space
+        # Re-apply fixed widths to keep columns stable
         try:
-            self.table.resizeColumnsToContents()
+            self._maybe_resize_columns()
         except Exception:
             pass
 
@@ -1022,11 +1007,11 @@ class TabularViewFeature:
         if not self.data_buffer:
             return
         try:
-            # Rate-limit DB-backed refreshes to avoid UI stalls
+            # Avoid DB calls on the UI thread during streaming. Settings/props are
+            # already loaded during initialization and via explicit actions.
+            # If a props refresh is needed, it should be triggered explicitly
+            # from non-streaming UI interactions to prevent stalls.
             now = datetime.now()
-            if (now - self._last_props_refresh).total_seconds() >= self._props_refresh_interval_sec:
-                self.refresh_channel_properties()
-                self._last_props_refresh = now
             values, sample_rate, frame_index = self.data_buffer[-1]  # Process the latest data
             self.data_buffer = []  # Clear buffer after processing
 
@@ -1040,35 +1025,36 @@ class TabularViewFeature:
                 return
 
             total_channels = len(values)
-            expected_main = max(1, len(self.channel_names))  # from model
+            expected_main = max(1, len(self.channel_names))  # from model definition
+            # Normalize incoming values to expected_main (pad missing with zeros, truncate extras)
+            norm_values = []
+            for i in range(expected_main):
+                if i < total_channels and isinstance(values[i], (list, np.ndarray)) and len(values[i]) > 0:
+                    norm_values.append(values[i])
+                else:
+                    # pad with zeros to 4096
+                    norm_values.append([0.0] * 4096)
+            # Determine inferred tacho count from remaining payload channels
             inferred_tacho = max(0, total_channels - expected_main)
             if inferred_tacho > 2:
                 inferred_tacho = 2
-            main_channels = total_channels - inferred_tacho
-
-            # If payload has fewer main channels than expected, shrink arrays but preserve names/units
-            if main_channels < expected_main:
-                self.log_and_set_status(f"Adjusting channel count from {self.num_channels} to {main_channels} based on payload, frame {frame_index}")
-                self.channel_names = self.channel_names[:main_channels] if self.channel_names else [f"Channel_{i+1}" for i in range(main_channels)]
-                self.channel_properties = {name: self.channel_properties.get(name, {"Unit": "mil", "CorrectionValue": 1.0, "Gain": 1.0, "Sensitivity": 1.0}) for name in self.channel_names}
-                self.num_channels = main_channels
+            # Always keep model-defined main channel count visible
+            if self.num_channels != expected_main or self.table.rowCount() != expected_main:
+                self.num_channels = expected_main
                 self.table.setRowCount(self.num_channels)
                 self.initialize_data_arrays()
                 self.update_table_defaults()
                 self.initialize_plots()
-            else:
-                # Keep model-defined main channel count
-                self.num_channels = expected_main
 
-            # Normalize channel lengths to 4096
-            for i in range(len(values)):
-                if len(values[i]) < 4096:
-                    values[i] = list(np.pad(values[i], (0, 4096 - len(values[i])), 'constant'))[:4096]
-                elif len(values[i]) > 4096:
-                    values[i] = values[i][:4096]
+            # Normalize each channel length to 4096
+            for i in range(len(norm_values)):
+                if len(norm_values[i]) < 4096:
+                    norm_values[i] = list(np.pad(norm_values[i], (0, 4096 - len(norm_values[i])), 'constant'))[:4096]
+                elif len(norm_values[i]) > 4096:
+                    norm_values[i] = norm_values[i][:4096]
 
             self.sample_rate = sample_rate if sample_rate and sample_rate > 0 else self.sample_rate
-            self.data = values
+            self.data = norm_values
             if self.console and (datetime.now() - self._last_log_time).total_seconds() >= self._log_interval_sec:
                 self.console.append_to_console(f"Processing buffered data for frame {frame_index}, mains={self.num_channels}, tacho={inferred_tacho}")
                 self._last_log_time = datetime.now()
@@ -1107,7 +1093,7 @@ class TabularViewFeature:
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch+1}"
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
                 unit = props["Unit"].lower()
-                self.raw_data[ch] = self.process_calibrated_data(values[ch], ch)
+                self.raw_data[ch] = self.process_calibrated_data(norm_values[ch], ch)
                 # Ensure cached FIR coefficients for current rate
                 self._ensure_filters()
                 self.low_pass_data[ch] = signal.lfilter(self._low_pass_coeffs, 1.0, self.raw_data[ch])
@@ -1118,9 +1104,7 @@ class TabularViewFeature:
                 direct_ptps, bandpass_ptps = [], []
                 one_x_amps_list, one_x_phases_list = [], []
                 two_x_amps_list, two_x_phases_list = [], []
-                nx1_amp_list, nx1_phase_list = [], []
-                nx2_amp_list, nx2_phase_list = [], []
-                nx3_amp_list, nx3_phase_list = [], []
+                nx_amp_list, nx_phase_list = [], []
                 for j in range(len(triggers) - 1):
                     start = triggers[j]
                     end = triggers[j + 1]
@@ -1137,19 +1121,14 @@ class TabularViewFeature:
                     amp2, phase2 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 2)
                     two_x_amps_list.append(amp2)
                     two_x_phases_list.append(phase2)
-                    # NX1/NX2/NX3 selections
-                    for n_val, a_list, p_list in [
-                        (self.nx1_selection, nx1_amp_list, nx1_phase_list),
-                        (self.nx2_selection, nx2_amp_list, nx2_phase_list),
-                        (self.nx3_selection, nx3_amp_list, nx3_phase_list),
-                    ]:
-                        try:
-                            n = float(n_val)
-                        except Exception:
-                            n = 3.0
-                        aN, _ = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
-                        _, pN = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
-                        a_list.append(aN); p_list.append(pN)
+                    # NX selection (single)
+                    try:
+                        n = float(self.nx_selection)
+                    except Exception:
+                        n = 3.0
+                    aN, _ = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
+                    _, pN = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
+                    nx_amp_list.append(aN); nx_phase_list.append(pN)
 
                 avg_direct = float(np.mean(direct_ptps)) if direct_ptps else 0.0
                 avg_bandpass = float(np.mean(bandpass_ptps)) if bandpass_ptps else 0.0
@@ -1157,12 +1136,8 @@ class TabularViewFeature:
                 avg_1xp = float(np.mean(one_x_phases_list)) if one_x_phases_list else 0.0
                 avg_2xa = float(np.mean(two_x_amps_list)) if two_x_amps_list else 0.0
                 avg_2xp = float(np.mean(two_x_phases_list)) if two_x_phases_list else 0.0
-                avg_nx1a = float(np.mean(nx1_amp_list)) if nx1_amp_list else 0.0
-                avg_nx1p = float(np.mean(nx1_phase_list)) if nx1_phase_list else 0.0
-                avg_nx2a = float(np.mean(nx2_amp_list)) if nx2_amp_list else 0.0
-                avg_nx2p = float(np.mean(nx2_phase_list)) if nx2_phase_list else 0.0
-                avg_nx3a = float(np.mean(nx3_amp_list)) if nx3_amp_list else 0.0
-                avg_nx3p = float(np.mean(nx3_phase_list)) if nx3_phase_list else 0.0
+                avg_nxa = float(np.mean(nx_amp_list)) if nx_amp_list else 0.0
+                avg_nxp = float(np.mean(nx_phase_list)) if nx_phase_list else 0.0
 
                 self.band_pass_peak_to_peak[ch] = avg_bandpass
                 self.band_pass_peak_to_peak_history[ch].append(avg_bandpass)
@@ -1175,24 +1150,18 @@ class TabularViewFeature:
                 self.one_x_phases[ch].append(avg_1xp)
                 self.two_x_amps[ch].append(avg_2xa)
                 self.two_x_phases[ch].append(avg_2xp)
-                self.nx1_amps[ch].append(avg_nx1a); self.nx1_phases[ch].append(avg_nx1p)
-                self.nx2_amps[ch].append(avg_nx2a); self.nx2_phases[ch].append(avg_nx2p)
-                self.nx3_amps[ch].append(avg_nx3a); self.nx3_phases[ch].append(avg_nx3p)
+                self.nx_amps[ch].append(avg_nxa); self.nx_phases[ch].append(avg_nxp)
                 if len(self.one_x_amps[ch]) > 50:
                     self.one_x_amps[ch] = self.one_x_amps[ch][-50:]
                     self.one_x_phases[ch] = self.one_x_phases[ch][-50:]
                     self.two_x_amps[ch] = self.two_x_amps[ch][-50:]
                     self.two_x_phases[ch] = self.two_x_phases[ch][-50:]
-                    self.nx1_amps[ch] = self.nx1_amps[ch][-50:]
-                    self.nx1_phases[ch] = self.nx1_phases[ch][-50:]
-                    self.nx2_amps[ch] = self.nx2_amps[ch][-50:]
-                    self.nx2_phases[ch] = self.nx2_phases[ch][-50:]
-                    self.nx3_amps[ch] = self.nx3_amps[ch][-50:]
-                    self.nx3_phases[ch] = self.nx3_phases[ch][-50:]
+                    self.nx_amps[ch] = self.nx_amps[ch][-50:]
+                    self.nx_phases[ch] = self.nx_phases[ch][-50:]
 
                 channel_data = {
                     "Channel Name": channel_name,
-                    "Unit": unit,
+                    "Unit": self._format_unit_display(channel_name),
                     "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
                     "RPM": f"{int(round(self.average_frequency[ch] * 60.0))}" if self.average_frequency[ch] > 0 else "0",
                     "Gap": (f"{float(self.gap_voltages[ch]):.2f}" if isinstance(self.gap_voltages, (list, tuple)) and ch < len(self.gap_voltages) and self.gap_voltages[ch] is not None else "0.00"),
@@ -1202,12 +1171,8 @@ class TabularViewFeature:
                     "1xPhase": f"{avg_1xp:.0f}°",
                     "2xAmp": self.format_direct_value([avg_2xa], unit),
                     "2xPhase": f"{avg_2xp:.0f}°",
-                    "NX1Amp": self.format_direct_value([avg_nx1a], unit),
-                    "NX1Phase": f"{avg_nx1p:.0f}°",
-                    "NX2Amp": self.format_direct_value([avg_nx2a], unit),
-                    "NX2Phase": f"{avg_nx2p:.0f}°",
-                    "NX3Amp": self.format_direct_value([avg_nx3a], unit),
-                    "NX3Phase": f"{avg_nx3p:.0f}°"
+                    "NXAmp": self.format_direct_value([avg_nxa], unit),
+                    "NXPhase": f"{avg_nxp:.0f}°"
                 }
                 self.update_table_row(ch, channel_data)
             QTimer.singleShot(0, self.update_plots)
@@ -1264,28 +1229,32 @@ class TabularViewFeature:
                     self.log_and_set_status("TabularView: Invalid nested data shape in selection payload")
                     return
 
-            # Refresh model properties and resize arrays
+            # Refresh model properties; keep all model-defined channels visible
             self.refresh_channel_properties()
             expected_main = max(1, len(self.channel_names))
-            if num_main < expected_main:
-                self.channel_names = self.channel_names[:num_main]
-            self.num_channels = num_main
             if self.table:
+                self.num_channels = expected_main
                 self.table.setRowCount(self.num_channels)
             self.initialize_data_arrays()
             self.update_table_defaults()
 
-            # Normalize channel lengths to 4096 for internal arrays
-            for i in range(len(values)):
-                if len(values[i]) < 4096:
-                    values[i] = list(np.pad(values[i], (0, 4096 - len(values[i])), 'constant'))[:4096]
-                elif len(values[i]) > 4096:
-                    values[i] = values[i][:4096]
+            # Normalize incoming values to expected_main channels and 4096 samples
+            norm_values = []
+            for i in range(expected_main):
+                if i < len(values) and isinstance(values[i], (list, np.ndarray)) and len(values[i]) > 0:
+                    v = values[i]
+                else:
+                    v = [0.0] * 4096
+                if len(v) < 4096:
+                    v = list(np.pad(v, (0, 4096 - len(v)), 'constant'))[:4096]
+                elif len(v) > 4096:
+                    v = v[:4096]
+                norm_values.append(v)
 
             self.sample_rate = Fs if Fs > 0 else self.sample_rate
 
             # Determine trigger channel (prefer second tacho if present)
-            inferred_tacho = max(0, total_ch - num_main)
+            inferred_tacho = max(0, total_ch - expected_main)
             if inferred_tacho > 2:
                 inferred_tacho = 2
             trigger_index = self.num_channels + 1 if inferred_tacho >= 2 else (self.num_channels if inferred_tacho >= 1 else None)
@@ -1314,7 +1283,7 @@ class TabularViewFeature:
             for ch in range(self.num_channels):
                 self.average_frequency[ch] = freq_from_channel if freq_from_channel > 0.0 else trig_based_freq
 
-                self.raw_data[ch] = self.process_calibrated_data(values[ch], ch)
+                self.raw_data[ch] = self.process_calibrated_data(norm_values[ch], ch)
                 nyquist = self.sample_rate / 2.0
                 tap_num = 31
                 low_pass_coeffs = signal.firwin(tap_num, 20 / nyquist, window='hamming')
@@ -1348,19 +1317,14 @@ class TabularViewFeature:
                     one_x_amps_list.append(amp1); one_x_phases_list.append(phase1)
                     amp2, phase2 = self.compute_harmonics(self.raw_data[ch], start, seg_len, 2)
                     two_x_amps_list.append(amp2); two_x_phases_list.append(phase2)
-                    # NX1/NX2/NX3 selections
-                    for n_val, a_list, p_list in [
-                        (self.nx1_selection, nx1_amp_list, nx1_phase_list),
-                        (self.nx2_selection, nx2_amp_list, nx2_phase_list),
-                        (self.nx3_selection, nx3_amp_list, nx3_phase_list),
-                    ]:
-                        try:
-                            n = float(n_val)
-                        except Exception:
-                            n = 3.0
-                        aN, _ = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
-                        _, pN = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
-                        a_list.append(aN); p_list.append(pN)
+                    # NX selection (single)
+                    try:
+                        n = float(self.nx_selection)
+                    except Exception:
+                        n = 3.0
+                    aN, _ = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
+                    _, pN = self.compute_harmonics(self.raw_data[ch], start, seg_len, n)
+                    nx_amp_list.append(aN); nx_phase_list.append(pN)
 
                 # Assign single-frame stats
                 self.band_pass_peak_to_peak[ch] = float(np.mean(bandpass_ptps)) if bandpass_ptps else 0.0
@@ -1370,13 +1334,9 @@ class TabularViewFeature:
                 self.one_x_phases[ch] = [float(np.mean(one_x_phases_list)) if one_x_phases_list else 0.0]
                 self.two_x_amps[ch] = [float(np.mean(two_x_amps_list)) if two_x_amps_list else 0.0]
                 self.two_x_phases[ch] = [float(np.mean(two_x_phases_list)) if two_x_phases_list else 0.0]
-                # Store NX1/NX2/NX3 stats
-                self.nx1_amps[ch] = [float(np.mean(nx1_amp_list)) if nx1_amp_list else 0.0]
-                self.nx1_phases[ch] = [float(np.mean(nx1_phase_list)) if nx1_phase_list else 0.0]
-                self.nx2_amps[ch] = [float(np.mean(nx2_amp_list)) if nx2_amp_list else 0.0]
-                self.nx2_phases[ch] = [float(np.mean(nx2_phase_list)) if nx2_phase_list else 0.0]
-                self.nx3_amps[ch] = [float(np.mean(nx3_amp_list)) if nx3_amp_list else 0.0]
-                self.nx3_phases[ch] = [float(np.mean(nx3_phase_list)) if nx3_phase_list else 0.0]
+                # Store NX stats (single)
+                self.nx_amps[ch] = [float(np.mean(nx_amp_list)) if nx_amp_list else 0.0]
+                self.nx_phases[ch] = [float(np.mean(nx_phase_list)) if nx_phase_list else 0.0]
 
             # Update UI from this single selection
             self.update_display()
@@ -1396,16 +1356,28 @@ class TabularViewFeature:
         headers = list(self.internal_headers)
         try:
             for col, internal in enumerate(headers):
-                item = QTableWidgetItem(channel_data[internal])
-                item.setTextAlignment(Qt.AlignCenter)
-                # Make table values bold
-                bold_font = QFont("Times New Roman", 10)
-                bold_font.setBold(True)
-                item.setFont(bold_font)
-                self.table.setItem(row, col, item)
+                text = channel_data[internal]
+                item = self.table.item(row, col)
+                if item is None:
+                    # Create once and keep reusing to minimize allocations per frame
+                    item = QTableWidgetItem(text)
+                    item.setTextAlignment(Qt.AlignCenter)
+                    bold_font = QFont("Times New Roman", 10)
+                    bold_font.setBold(True)
+                    item.setFont(bold_font)
+                    self.table.setItem(row, col, item)
+                else:
+                    # Only update if text changed to reduce unnecessary repaints
+                    if item.text() != text:
+                        item.setText(text)
             logging.debug(f"Updated table row {row} with unit: {channel_data['Unit']}")
             # After updating a row, ensure sizing stays correct
             self.table.resizeRowToContents(row)
+            # Keep column widths accurate but throttled
+            try:
+                self._maybe_resize_columns()
+            except Exception:
+                pass
         except Exception as ex:
             self.log_and_set_status(f"Error updating table row {row}: {str(ex)}")
 
@@ -1416,42 +1388,123 @@ class TabularViewFeature:
         if sip.isdeleted(self.table):
             self.log_and_set_status("Table widget deleted, skipping update_display")
             return
+        # Refresh table cells from current cached data
         try:
-            self.process_buffered_data()  # Process any buffered data
-            for ch in range(self.num_channels):
+            self._render_table_from_state()
+        except Exception as ex:
+            self.log_and_set_status(f"Error rendering table: {str(ex)}")
+        # Ensure column widths remain constant during periodic refresh (throttled)
+        try:
+            self._maybe_resize_columns()
+        except Exception:
+            pass
+
+    def _text_width(self, metrics, text):
+        """Return pixel width of text using available API (horizontalAdvance preferred)."""
+        try:
+            if hasattr(metrics, 'horizontalAdvance'):
+                return metrics.horizontalAdvance(text)
+            return metrics.width(text)
+        except Exception:
+            return 0
+
+    def _apply_fixed_column_widths(self):
+        """Set fixed resize mode and width for all columns to prevent jumping, based on
+        both header labels and current cell contents (sampled rows)."""
+        if not self.table or sip.isdeleted(self.table):
+            return
+        try:
+            header = self.table.horizontalHeader()
+            # Estimate width based on a representative max string
+            # Use header labels as baseline (header font) and cell contents using item font
+            from PyQt5.QtGui import QFontMetrics
+            header_metrics = QFontMetrics(header.font())
+            # Use table's font (same applied to items) for cell width computations
+            item_metrics = QFontMetrics(self.table.font())
+            padding = 42  # extra padding to avoid cramped look
+            labels = self.get_display_headers()
+            for i, label in enumerate(labels):
+                try:
+                    # Start with header label width
+                    w = self._text_width(header_metrics, label) + padding
+                    # Consider current cell contents: sample all rows for widest text
+                    sample_rows = self.table.rowCount()
+                    for r in range(sample_rows):
+                        it = self.table.item(r, i)
+                        if it is not None:
+                            tw = self._text_width(item_metrics, it.text()) + padding
+                            if tw > w:
+                                w = tw
+                    # No artificial caps: allow horizontal scroll if total width is large
+                    w = max(110, w)
+                    header.setSectionResizeMode(i, QHeaderView.Fixed)
+                    self.table.setColumnWidth(i, w)
+                except Exception:
+                    pass
+        except Exception:
+            # Fallback: set a sensible default width if metrics failed
+            try:
+                header = self.table.horizontalHeader()
+                for i in range(len(self.internal_headers)):
+                    header.setSectionResizeMode(i, QHeaderView.Fixed)
+                    self.table.setColumnWidth(i, 110)
+            except Exception:
+                pass
+
+    def _maybe_resize_columns(self, force=False):
+        """Throttle expensive column width recalculations to at most once every
+        _table_resize_interval_sec seconds unless forced."""
+        try:
+            now = datetime.now()
+            if force or (now - self._last_table_resize).total_seconds() >= self._table_resize_interval_sec:
+                self._apply_fixed_column_widths()
+                self._last_table_resize = now
+        except Exception:
+            pass
+
+    def _render_table_from_state(self):
+        """Populate all table rows from current cached arrays and properties.
+        Safe for both streaming and single-frame selection states.
+        """
+        headers = list(self.internal_headers)
+        now_str = datetime.now().strftime("%d-%b-%Y %I:%M:%S %p")
+        for ch in range(self.num_channels):
+            try:
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch+1}"
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
-                unit = props["Unit"].lower()
+                unit = (props.get("Unit", "mil") or "mil").lower()
                 subunit = (props.get("Subunit") or "pk-pk").lower()
-                direct_values = [self._convert_ptp_by_subunit(np.ptp(self.raw_data[ch]), subunit)] if np.any(self.raw_data[ch]) else []
+                # Compute direct and bandpass from cached arrays
+                direct_ptp = float(np.ptp(self.raw_data[ch])) if isinstance(self.raw_data[ch], np.ndarray) and self.raw_data[ch].size > 0 else 0.0
+                direct_val = self._convert_ptp_by_subunit(direct_ptp, subunit)
+                bandpass_ptp = float(self.band_pass_peak_to_peak[ch]) if ch < len(self.band_pass_peak_to_peak) else 0.0
+                bandpass_val = self._convert_ptp_by_subunit(bandpass_ptp, subunit)
+                # Harmonics: use last values if available
+                one_xa = float(self.one_x_amps[ch][-1]) if self.one_x_amps[ch] else 0.0
+                one_xp = float(self.one_x_phases[ch][-1]) if self.one_x_phases[ch] else 0.0
+                two_xa = float(self.two_x_amps[ch][-1]) if self.two_x_amps[ch] else 0.0
+                two_xp = float(self.two_x_phases[ch][-1]) if self.two_x_phases[ch] else 0.0
+                nxa = float(self.nx_amps[ch][-1]) if self.nx_amps[ch] else 0.0
+                nxp = float(self.nx_phases[ch][-1]) if self.nx_phases[ch] else 0.0
+                # Build row data
                 channel_data = {
                     "Channel Name": channel_name,
-                    "Unit": unit,
-                    "DateTime": datetime.now().strftime("%d-%b-%Y %I:%M:%S %p"),
+                    "Unit": self._format_unit_display(channel_name),
+                    "DateTime": now_str,
                     "RPM": f"{int(round(self.average_frequency[ch] * 60.0))}" if self.average_frequency[ch] > 0 else "0",
                     "Gap": (f"{float(self.gap_voltages[ch]):.2f}" if isinstance(self.gap_voltages, (list, tuple)) and ch < len(self.gap_voltages) and self.gap_voltages[ch] is not None else "0.00"),
-                    "Direct": self.format_direct_bandpass_value(np.mean(direct_values) if direct_values else 0.0, unit),
-                    "Bandpass": self.format_direct_bandpass_value(self._convert_ptp_by_subunit(self.band_pass_peak_to_peak[ch], subunit), unit),
-                    "1xA": self.format_direct_value([np.mean(self.one_x_amps[ch])], unit) if self.one_x_amps[ch] else "0.00",
-                    "1xP": f"{np.mean(self.one_x_phases[ch]):.0f}°" if self.one_x_phases[ch] else "0.00",
-                    "2xA": self.format_direct_value([np.mean(self.two_x_amps[ch])], unit) if self.two_x_amps[ch] else "0.00",
-                    "2xP": f"{np.mean(self.two_x_phases[ch]):.0f}°" if self.two_x_phases[ch] else "0.00",
-                    "NXAmp": self.format_direct_value([np.mean(self.three_x_amps[ch])], unit) if self.three_x_amps[ch] else "0.00",
-                    "NXPhase": f"{np.mean(self.three_x_phases[ch]):.0f}°" if self.three_x_phases[ch] else "0.00"
+                    "Direct": self.format_direct_bandpass_value(direct_val, unit),
+                    "Bandpass": self.format_direct_bandpass_value(bandpass_val, unit),
+                    "1xAmp": self.format_direct_value([one_xa], unit),
+                    "1xPhase": f"{one_xp:.0f}°",
+                    "2xAmp": self.format_direct_value([two_xa], unit),
+                    "2xPhase": f"{two_xp:.0f}°",
+                    "NXAmp": self.format_direct_value([nxa], unit),
+                    "NXPhase": f"{nxp:.0f}°",
                 }
                 self.update_table_row(ch, channel_data)
-            # After bulk updates, adjust rows and table height with throttling
-            now = datetime.now()
-            if (now - self._last_table_resize).total_seconds() >= self._table_resize_interval_sec:
-                self.table.resizeRowsToContents()
-                self.adjust_table_height()
-                self._last_table_resize = now
-            # Do not update plots (disabled)
-            if self.console and (datetime.now() - self._last_log_time).total_seconds() >= self._log_interval_sec:
-                self.console.append_to_console(f"Updated display for all {self.num_channels} channels")
-                self._last_log_time = datetime.now()
-        except Exception as ex:
-            self.log_and_set_status(f"Error in update_display: {str(ex)}")
+            except Exception as ex:
+                self.log_and_set_status(f"Error rendering row {ch}: {str(ex)}")
 
     def update_plots(self):
         if not self.plots_enabled:
