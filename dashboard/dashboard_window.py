@@ -115,7 +115,7 @@ class DashboardWindow(QWidget):
         app.setStyleSheet("""
         QInputDialog, QMessageBox {
             background-color: #1e2937;
-            color: white;
+            color: #ebeef2;
             font-size: 16px;
             border: 1px solid #2c3e50;
             border-radius: 8px;
@@ -124,7 +124,7 @@ class DashboardWindow(QWidget):
         }
         QInputDialog QLineEdit {
             background-color: #2c3e50;
-            color: white;
+            color: #ebeef2;
             border: 1px solid #4a90e2;
             padding: 8px;
             border-radius: 4px;
@@ -139,7 +139,7 @@ class DashboardWindow(QWidget):
         QInputDialog QPushButton,
         QMessageBox QPushButton {
             background-color: #4a90e2;
-            color: white;
+            color: #ebeef2;
             border: none;
             padding: 8px 16px;
             border-radius: 5px;
