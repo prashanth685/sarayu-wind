@@ -68,9 +68,17 @@ class TabularViewWorker(QObject):
                 gain = float(channel.get("gain", "1.0")) if channel.get("gain") else 1.0
                 sensitivity = float(channel.get("sensitivity", "1.0")) if channel.get("sensitivity") and float(channel.get("sensitivity")) != 0 else 1.0
                 unit = channel.get("unit", "mil").lower().strip()
+                # Normalize subunit (legacy variants -> short form)
+                _sub_raw = str(channel.get("subunit", "pp") or "pp").lower().strip()
+                if _sub_raw in ("pk-pk", "peak to peak", "peak-to-peak", "peak2peak", "p2p", "ppk", "peaktopeak"):
+                    _sub_norm = "pp"
+                elif _sub_raw in ("peak", "pk"):
+                    _sub_norm = "pk"
+                else:
+                    _sub_norm = _sub_raw or "pp"
                 channel_properties[channel_name] = {
                     "Unit": unit,
-                    "Subunit": str(channel.get("subunit", "pk-pk")).lower().strip() or "pk-pk",
+                    "Subunit": _sub_norm,
                     "CorrectionValue": correction_value,
                     "Gain": gain,
                     "Sensitivity": sensitivity
@@ -309,11 +317,37 @@ class TabularViewFeature:
         # Create a scrollable area for many checkboxes to avoid overflow
         opts_scroll = QScrollArea()
         opts_scroll.setWidgetResizable(True)
+        opts_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        opts_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        opts_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # Base style for the area
         opts_scroll.setStyleSheet("QScrollArea { border: none; }")
+        # High-contrast, thicker scrollbar styles applied directly to the bars
+        _sb_style_vert = (
+            "QScrollBar:vertical{background:#e5e7eb;width:12px;margin:0;border:none;}"
+            "QScrollBar::handle:vertical{background:#2563eb;min-height:28px;border-radius:6px;}"
+            "QScrollBar::handle:vertical:hover{background:#1e40af;}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+        )
+        _sb_style_horz = (
+            "QScrollBar:horizontal{background:#e5e7eb;height:12px;margin:0;border:none;}"
+            "QScrollBar::handle:horizontal{background:#2563eb;min-width:28px;border-radius:6px;}"
+            "QScrollBar::handle:horizontal:hover{background:#1e40af;}"
+            "QScrollBar::add-line:horizontal,QScrollBar::sub-line:horizontal{width:0;}"
+            "QScrollBar::add-page:horizontal,QScrollBar::sub-page:horizontal{background:transparent;}"
+        )
+        try:
+            opts_scroll.verticalScrollBar().setStyleSheet(_sb_style_vert)
+            opts_scroll.horizontalScrollBar().setStyleSheet(_sb_style_horz)
+        except Exception:
+            pass
         opts_container = QWidget()
         opts_layout = QVBoxLayout(opts_container)
         opts_layout.setContentsMargins(0, 0, 0, 0)
         opts_layout.setSpacing(6)
+        # Standardize NX dropdown width
+        self._nx_combo_width = 100
         for header in headers:
             # Create checkboxes for visibility; for NX columns use current custom labels but key them by internal name
             display_text = header
@@ -339,7 +373,26 @@ class TabularViewFeature:
                 combo = QComboBox()
                 combo.addItems(self._nx_allowed_values)
                 combo.setCurrentText(self._format_nx_value(self.nx_selection))
-                combo.setFixedWidth(80)
+                combo.setMinimumContentsLength(4)
+                combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+                combo.setFixedWidth(self._nx_combo_width)
+                # Style dropdown popup and its scrollbar (apply style to the popup view directly)
+                combo.setStyleSheet(
+                    "QComboBox{min-height:26px;}"
+                    "QComboBox QAbstractItemView{background:#ffffff;border:1px solid #d0d7e2;selection-background-color:#e3f2fd;selection-color:#1e293b;}"
+                    "QComboBox QAbstractItemView::item{padding:4px 8px;}"
+                )
+                try:
+                    view = combo.view()
+                    view.setStyleSheet(
+                        "QScrollBar:vertical{background:#e5e7eb;width:12px;margin:0;border:none;}"
+                        "QScrollBar::handle:vertical{background:#2563eb;min-height:28px;border-radius:6px;}"
+                        "QScrollBar::handle:vertical:hover{background:#1e40af;}"
+                        "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+                        "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"
+                    )
+                except Exception:
+                    pass
                 combo.currentTextChanged.connect(self.on_nx_selection_changed)
                 # Keep two combos in sync if both exist
                 def _sync_combo(text, which=key):
@@ -590,15 +643,20 @@ class TabularViewFeature:
         return unit
 
     def _format_unit_display(self, channel_name: str) -> str:
-        """Return formatted unit text as unit(subunit), e.g., mil(pk)."""
+        """Return formatted unit text as unit,subunit, e.g., mil,pk."""
         try:
             props = self.channel_properties.get(channel_name, {})
             unit = str(props.get("Unit", "mil") or "mil").lower().strip()
-            sub = str(props.get("Subunit", "pk-pk") or "pk-pk").lower().strip()
-            # Always show as unit(subunit)
-            return f"{unit}({sub})" if sub else unit
+            sub = str(props.get("Subunit", "pp") or "pp").lower().strip()
+            # Normalize legacy variants into short form for display
+            if sub in ("pk-pk", "peak to peak", "peak-to-peak", "peak2peak", "p2p", "ppk", "peaktopeak"):
+                sub = "pp"
+            elif sub in ("peak", "pk"):
+                sub = "pk"
+            # Always show as unit,subunit
+            return f"{unit},{sub}" if sub else unit
         except Exception:
-            return "mil(pk-pk)"
+            return "mil,pp"
 
     def initialize_data_arrays(self):
         self.raw_data = [np.zeros(4096) for _ in range(self.num_channels)]
@@ -978,12 +1036,16 @@ class TabularViewFeature:
 
     def _convert_ptp_by_subunit(self, ptp_value, subunit):
         """Convert a peak-to-peak value into the desired subunit.
-        subunit: 'pk-pk' => unchanged, 'pk' => ptp/2, 'rms' => ptp/(2*sqrt(2)) assuming sinusoid.
+        subunit: 'pp' (pk-pk) => unchanged, 'pk' => ptp/2, 'rms' => ptp/(2*sqrt(2)) assuming sinusoid.
         """
         try:
             if ptp_value is None:
                 return 0.0
-            sub = (subunit or "pk-pk").lower().strip()
+            sub = (subunit or "pp").lower().strip()
+            if sub in ("pk-pk", "peak to peak", "peak-to-peak", "peak2peak", "p2p", "ppk", "peaktopeak"):
+                sub = "pp"
+            elif sub in ("peak", "pk"):
+                sub = "pk"
             v = float(ptp_value)
             if sub == "pk":
                 return v / 2.0
@@ -1473,7 +1535,7 @@ class TabularViewFeature:
                 channel_name = self.channel_names[ch] if ch < len(self.channel_names) else f"Channel {ch+1}"
                 props = self.channel_properties.get(channel_name, {"Unit": "mil"})
                 unit = (props.get("Unit", "mil") or "mil").lower()
-                subunit = (props.get("Subunit") or "pk-pk").lower()
+                subunit = (props.get("Subunit") or "pp").lower()
                 # Compute direct and bandpass from cached arrays
                 direct_ptp = float(np.ptp(self.raw_data[ch])) if isinstance(self.raw_data[ch], np.ndarray) and self.raw_data[ch].size > 0 else 0.0
                 direct_val = self._convert_ptp_by_subunit(direct_ptp, subunit)

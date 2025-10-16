@@ -56,6 +56,26 @@ class Database:
             logging.error(f"Failed to reconnect to MongoDB: {str(e)}")
             raise
 
+    def _normalize_subunit(self, sub: str) -> str:
+        """Normalize various subunit representations to short forms.
+        Accepts legacy strings like 'pk-pk', 'peak to peak', 'peak-to-peak' -> 'pp'
+        and 'peak' -> 'pk'. Other values ('rms') are returned as-is if valid.
+        """
+        try:
+            s = (sub or "").strip().lower()
+        except Exception:
+            s = ""
+        if s in ("pk-pk", "p2p", "peak to peak", "peak-to-peak", "peak2peak", "ppk", "peaktopeak"):
+            return "pp"
+        if s in ("peak", "pk"):
+            return "pk"
+        if s == "rms":
+            return "rms"
+        # Default to pp if unrecognized but close variants
+        if any(x in s for x in ("peak", "pk")):
+            return "pk" if "to" not in s and "-" not in s else "pp"
+        return s or "pp"
+
     def _create_history_indexes(self):
         try:
             self.history_collection.create_index([
@@ -119,7 +139,7 @@ class Database:
                     "type": "Displacement",
                     "sensitivity": "1.0",
                     "unit": "mil",
-                    "subunit": "pk-pk",
+                    "subunit": "pp",
                     "correctionValue": "",
                     "gain": "",
                     "unitType": "",
@@ -134,11 +154,15 @@ class Database:
                 if channel["unit"].lower().strip() not in valid_units:
                     logging.error(f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}")
                     return False, f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}"
-                # Validate subunit
-                valid_subunits = ["pk-pk", "pk", "rms"]
-                if str(channel.get("subunit", "pk-pk")).lower().strip() not in valid_subunits:
+                # Normalize and validate subunit (accept legacy values)
+                sub_raw = str(channel.get("subunit", "pp") or "pp").lower().strip()
+                sub_norm = self._normalize_subunit(sub_raw)
+                valid_subunits = ["pp", "pk", "rms", "pk-pk"]
+                if sub_raw not in valid_subunits and sub_norm not in ["pp", "pk", "rms"]:
                     logging.error(f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}")
                     return False, f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}"
+                # Store normalized short form
+                channel["subunit"] = sub_norm
                 self._calculate_channel_properties(channel)
 
         project_data = {
@@ -279,7 +303,7 @@ class Database:
                         "type": "Displacement",
                         "sensitivity": "1.0",
                         "unit": "mil",
-                        "subunit": "pk-pk",
+                        "subunit": "pp",
                         "correctionValue": "",
                         "gain": "",
                         "unitType": "",
@@ -293,10 +317,14 @@ class Database:
                     if channel["unit"].lower().strip() not in valid_units:
                         logging.error(f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}")
                         return False, f"Invalid unit '{channel['unit']}' for channel {channel['channelName']}. Must be one of {valid_units}"
-                    valid_subunits = ["pk-pk", "pk", "rms"]
-                    if str(channel.get("subunit", "pk-pk")).lower().strip() not in valid_subunits:
+                    # Normalize and validate subunit (accept legacy values)
+                    sub_raw = str(channel.get("subunit", "pp") or "pp").lower().strip()
+                    sub_norm = self._normalize_subunit(sub_raw)
+                    valid_subunits = ["pp", "pk", "rms", "pk-pk"]
+                    if sub_raw not in valid_subunits and sub_norm not in ["pp", "pk", "rms"]:
                         logging.error(f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}")
                         return False, f"Invalid subunit '{channel.get('subunit')}' for channel {channel['channelName']}. Must be one of {valid_subunits}"
+                    channel["subunit"] = sub_norm
                     self._calculate_channel_properties(channel)
             update_data["models"] = updated_models
             logging.debug(f"Updating project with new models: {len(updated_models)} models")

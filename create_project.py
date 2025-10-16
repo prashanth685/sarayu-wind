@@ -354,8 +354,8 @@ class CreateProjectWidget(QWidget):
                 table.setCellWidget(row, 4, unit_combo)
 
                 subunit_combo = QComboBox()
-                subunit_combo.addItems(["pk-pk", "pk", "rms"])
-                subunit_combo.setCurrentText("pk-pk")
+                subunit_combo.addItems(["pp", "pk", "rms"])
+                subunit_combo.setCurrentText("pp")
                 table.setCellWidget(row, 5, subunit_combo)
                 
                 table.setItem(row, 6, QTableWidgetItem(""))
@@ -569,8 +569,9 @@ class CreateProjectWidget(QWidget):
                 table.setCellWidget(row, 4, unit_combo)
 
                 subunit_combo = QComboBox()
-                subunit_combo.addItems(["pk-pk", "pk", "rms"])
-                subunit_combo.setCurrentText(channel.get("subunit", "pk-pk"))
+                subunit_combo.addItems(["pp", "pk", "rms"])
+                sub_val = str(channel.get("subunit", "pp") or "pp").lower()
+                subunit_combo.setCurrentText("pp" if sub_val in ("pp", "pk-pk", "peak to peak") else ("pk" if sub_val in ("pk", "peak") else "rms"))
                 table.setCellWidget(row, 5, subunit_combo)
                 
                 table.setItem(row, 6, QTableWidgetItem(channel.get("correctionValue", "")))
@@ -611,8 +612,8 @@ class CreateProjectWidget(QWidget):
                 table.setCellWidget(row, 4, unit_combo)
 
                 subunit_combo = QComboBox()
-                subunit_combo.addItems(["pk-pk", "pk", "rms"])
-                subunit_combo.setCurrentText("pk-pk")
+                subunit_combo.addItems(["pp", "pk", "rms"])
+                subunit_combo.setCurrentText("pp")
                 table.setCellWidget(row, 5, subunit_combo)
                 
                 table.setItem(row, 6, QTableWidgetItem(""))
@@ -654,8 +655,8 @@ class CreateProjectWidget(QWidget):
         table.setCellWidget(current_rows, 4, unit_combo)
 
         subunit_combo = QComboBox()
-        subunit_combo.addItems(["pk-pk", "pk", "rms"])
-        subunit_combo.setCurrentText("pk-pk")
+        subunit_combo.addItems(["pp", "pk", "rms"])
+        subunit_combo.setCurrentText("pp")
         table.setCellWidget(current_rows, 5, subunit_combo)
         
         table.setItem(current_rows, 6, QTableWidgetItem(""))
@@ -718,7 +719,7 @@ class CreateProjectWidget(QWidget):
                         "type": table.cellWidget(row, 2).currentText() if table.cellWidget(row, 2) else "Displacement",
                         "sensitivity": table.item(row, 3).text().strip() if table.item(row, 3) else "",
                         "unit": table.cellWidget(row, 4).currentText() if table.cellWidget(row, 4) else "mil",
-                        "subunit": table.cellWidget(row, 5).currentText() if table.cellWidget(row, 5) else "pk-pk",
+                        "subunit": table.cellWidget(row, 5).currentText() if table.cellWidget(row, 5) else "pp",
                         "correctionValue": table.item(row, 6).text().strip() if table.item(row, 6) else "",
                         "gain": table.item(row, 7).text().strip() if table.item(row, 7) else "",
                         "unitType": (table.cellWidget(row, 8).currentText().strip() if table.cellWidget(row, 8) else (table.item(row, 8).text().strip() if table.item(row, 8) else "")),
