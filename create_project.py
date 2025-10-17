@@ -515,7 +515,7 @@ class CreateProjectWidget(QWidget):
                 alternate-background-color: #f9fafb;
             }
             QTableWidget::item {
-                padding: 6px;
+                padding: 10px;
                 border: none;
                 height:70px;
                 color: #1a202c;

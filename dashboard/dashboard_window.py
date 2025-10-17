@@ -1,6 +1,8 @@
 import sys
 import gc
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QSplitter, QSizePolicy, QApplication, QMessageBox
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QSplitter, QSizePolicy, QApplication, 
+                            QMessageBox, QHBoxLayout, QPushButton, QSizePolicy)
+from PyQt5.QtCore import QPropertyAnimation, QEasingCurve
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QThread, QObject
 from PyQt5.QtGui import QIcon, QColor
 import os
@@ -67,6 +69,7 @@ class DashboardWindow(QWidget):
         self.db = db
         self.email = email
         self.auth_window = auth_window
+        self.sidebar_collapsed = False
 
         self.current_project = None
         self.channel_count = None
@@ -157,8 +160,8 @@ class DashboardWindow(QWidget):
         }
         QMdiSubWindow {
             background-color: #ebeef2;
-            border: 1px solid #ebeef2;
-            border-radius: 0px;
+            border: 5px solid #2c3e50;
+            border-radius: 5px;
         }
         QMdiSubWindow > QWidget {
             background-color: yellow;
@@ -200,17 +203,65 @@ class DashboardWindow(QWidget):
         central_widget.setLayout(central_layout)
         main_layout.addWidget(central_widget, 1)
 
+        # Create main splitter
         self.main_splitter = QSplitter(Qt.Horizontal)
         self.main_splitter.setContentsMargins(0, 0, 0, 0)
         self.main_splitter.setHandleWidth(1)
-        self.main_splitter.setStyleSheet("QSplitter::handle { background-color: #2c3e50; }")
+        self.main_splitter.setStyleSheet("""
+            QSplitter::handle {
+                background-color: #2c3e50;
+                width: 1px;
+            }
+            QSplitter::handle:hover {
+                background-color: #4a90e2;
+            }
+        """)
         central_layout.addWidget(self.main_splitter)
 
+        # Tree view container with fixed width
+        self.tree_container = QWidget()
+        self.tree_container.setFixedWidth(300)  # Default width when expanded
+        self.tree_container.setStyleSheet("background-color: #232629;")
+        tree_layout = QVBoxLayout(self.tree_container)
+        tree_layout.setContentsMargins(0, 0, 0, 0)
+        tree_layout.setSpacing(0)
+
+        # Toggle button for sidebar
+        self.toggle_sidebar_btn = QPushButton("☰")
+        self.toggle_sidebar_btn.setFixedSize(30, 30)
+        self.toggle_sidebar_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2c3e50;
+                color: white;
+                border: none;
+                font-size: 16px;
+                border-radius: 4px;
+            }
+            QPushButton:hover {
+                background-color: #4a90e2;
+            }
+        """)
+        self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
+        
+        # Header with toggle button
+        header = QWidget()
+        header.setFixedHeight(40)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(5, 5, 5, 5)
+        header_layout.addWidget(self.toggle_sidebar_btn)
+        header_layout.addStretch()
+        tree_layout.addWidget(header)
+
+        # Add tree view
         self.tree_view = TreeView(self)
         self.tree_view.setVisible(False)
         self.tree_view.channel_selected.connect(self.on_channel_selected)
-        self.main_splitter.addWidget(self.tree_view)
+        tree_layout.addWidget(self.tree_view)
 
+        # Add tree container to splitter
+        self.main_splitter.addWidget(self.tree_container)
+
+        # Main content area
         right_container = QWidget()
         right_container.setStyleSheet("background-color: #ebeef2;")
         right_layout = QVBoxLayout()
@@ -225,10 +276,9 @@ class DashboardWindow(QWidget):
         right_layout.addWidget(self.main_section, 1)
         self.main_splitter.addWidget(right_container)
 
-        window_width = self.width() if self.width() > 0 else 1200
-        tree_view_width = int(window_width * 0.15)
-        right_container_width = int(window_width * 0.85)
-        self.main_splitter.setSizes([tree_view_width, right_container_width])
+        # Set initial sizes
+        self.sidebar_collapsed = False
+        self.update_sidebar()
 
         self.console = Console(self)
         self.mqtt_status = MQTTStatus(self)
@@ -247,6 +297,47 @@ class DashboardWindow(QWidget):
         self.console_layout.addWidget(self.mqtt_status)
 
         main_layout.addWidget(self.console_container)
+
+    def toggle_sidebar(self):
+        """Toggle the sidebar between collapsed and expanded states."""
+        self.sidebar_collapsed = not self.sidebar_collapsed
+        self.update_sidebar()
+
+    def update_sidebar(self):
+        """Update the sidebar state (collapsed/expanded) with animation."""
+        # Update button icon
+        self.toggle_sidebar_btn.setText("☰" if self.sidebar_collapsed else "✕")
+        
+        # Animate the width change
+        self.animation = QPropertyAnimation(self.tree_container, b"minimumWidth")
+        self.animation.setDuration(200)
+        self.animation.setEasingCurve(QEasingCurve.InOutQuad)
+        
+        if self.sidebar_collapsed:
+            self.animation.setStartValue(300)  # Expanded width
+            self.animation.setEndValue(50)     # Collapsed width
+            self.tree_view.setVisible(False)
+        else:
+            self.animation.setStartValue(50)   # Collapsed width
+            self.animation.setEndValue(300)    # Expanded width
+            self.tree_view.setVisible(True)
+            
+        self.animation.start()
+        
+        # Update the splitter sizes
+        QTimer.singleShot(200, self.update_splitter_sizes)
+
+    def update_splitter_sizes(self):
+        """Update the splitter sizes based on sidebar state."""
+        if self.sidebar_collapsed:
+            self.main_splitter.setSizes([50, self.width() - 50])
+        else:
+            self.main_splitter.setSizes([300, self.width() - 300])
+
+    def resizeEvent(self, event):
+        """Handle window resize events to maintain proper layout."""
+        super().resizeEvent(event)
+        self.update_splitter_sizes()
 
     def on_channel_selected(self, model_name, channel_name):
         """Handle channel selection from TreeView."""

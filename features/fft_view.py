@@ -321,21 +321,35 @@ class FFTViewFeature:
 
         pg.setConfigOptions(antialias=False)
 
+        # Create magnitude plot widget with enhanced grid and cursor
         self.magnitude_plot_widget = pg.PlotWidget()
         self.magnitude_plot_widget.setBackground("white")
         display_channel = self.channel_name if self.channel_name else f"Channel_{self.channel_index + 1}" if self.channel_index is not None else "Unknown"
         self.magnitude_plot_widget.setTitle(f"Magnitude Spectrum - {display_channel}", color="black", size="12pt")
         self.magnitude_plot_widget.setLabel('left', 'Amplitude', color='#000000')
         self.magnitude_plot_widget.setLabel('bottom', 'Frequency (Hz)', color='#000000')
-        self.magnitude_plot_widget.showGrid(x=True, y=True)
+        
+        # Enhanced grid with more lines
+        self.magnitude_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.magnitude_plot_widget.getPlotItem().getViewBox().setMouseEnabled(x=True, y=True)
+        
+        # Set axis ranges
         self.magnitude_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
         self.magnitude_plot_widget.enableAutoRange('y', True)
+        
+        # Add more grid lines
+        x_axis = self.magnitude_plot_widget.getAxis('bottom')
+        x_axis.setGrid(80)  # More grid lines on x-axis
+        y_axis = self.magnitude_plot_widget.getAxis('left')
+        y_axis.setGrid(80)  # More grid lines on y-axis
+        
         # Set custom left axis with initial decimals (fallback 1)
         try:
             self.left_axis = LeftAxisItem(orientation='left', decimals=1)
             self.magnitude_plot_widget.setAxisItems({'left': self.left_axis})
         except Exception:
             self.left_axis = None
+            
         # Improve axis readability similar to Time View
         try:
             tick_font = pg.Qt.QtGui.QFont()
@@ -348,17 +362,45 @@ class FFTViewFeature:
                 ax.setTextPen(pg.mkPen(color='#000000'))
         except Exception:
             pass
+            
+        # Create vertical cursor line for magnitude plot
+        self.magnitude_cursor = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='black', width=1, style=Qt.DashLine))
+        self.magnitude_plot_widget.addItem(self.magnitude_cursor, ignoreBounds=True)
+        
+        # Connect mouse move event
+        self.magnitude_plot_widget.scene().sigMouseMoved.connect(self.on_mouse_moved)
+        
         self.magnitude_plot_item = self.magnitude_plot_widget.plot(pen=pg.mkPen(color='#4a90e2', width=2))
         plot_layout.addWidget(self.magnitude_plot_widget)
 
+        # Create phase plot widget with same enhancements
         self.phase_plot_widget = pg.PlotWidget()
         self.phase_plot_widget.setBackground("white")
         self.phase_plot_widget.setTitle(f"Phase Spectrum - {display_channel}", color="black", size="12pt")
         self.phase_plot_widget.setLabel('left', 'Phase (degrees)', color='#000000')
         self.phase_plot_widget.setLabel('bottom', 'Frequency (Hz)', color='#000000')
-        self.phase_plot_widget.showGrid(x=True, y=True)
+        
+        # Enhanced grid with more lines
+        self.phase_plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.phase_plot_widget.getPlotItem().getViewBox().setMouseEnabled(x=True, y=True)
+        
+        # Set axis ranges
         self.phase_plot_widget.setXRange(self.settings.start_frequency, self.settings.stop_frequency, padding=0.02)
         self.phase_plot_widget.enableAutoRange('y', True)
+        
+        # Add more grid lines
+        x_axis = self.phase_plot_widget.getAxis('bottom')
+        x_axis.setGrid(80)  # More grid lines on x-axis
+        y_axis = self.phase_plot_widget.getAxis('left')
+        y_axis.setGrid(80)  # More grid lines on y-axis
+        
+        # Add vertical cursor line for phase plot
+        self.phase_cursor = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen(color='black', width=1, style=Qt.DashLine))
+        self.phase_plot_widget.addItem(self.phase_cursor, ignoreBounds=True)
+        
+        # Connect mouse move event
+        self.phase_plot_widget.scene().sigMouseMoved.connect(self.on_mouse_moved)
+        
         self.phase_plot_item = self.phase_plot_widget.plot(pen=pg.mkPen(color='#e74c3c', width=2))
         plot_layout.addWidget(self.phase_plot_widget)
 
@@ -631,6 +673,27 @@ class FFTViewFeature:
                     pass
         except Exception:
             pass
+
+    def on_mouse_moved(self, pos):
+        """Handle mouse movement events to update cursor lines in both plots."""
+        try:
+            # Get the plot item that received the event
+            sender = self.widget.sender()
+            if not hasattr(sender, 'getViewWidget'):
+                return
+                
+            # Get the view and map the mouse position to plot coordinates
+            view = sender.views()[0]
+            mouse_point = view.mapToView(pos)
+            
+            # Update cursor lines in both plots
+            if hasattr(self, 'magnitude_cursor'):
+                self.magnitude_cursor.setPos(mouse_point.x())
+            if hasattr(self, 'phase_cursor'):
+                self.phase_cursor.setPos(mouse_point.x())
+                
+        except Exception as e:
+            logging.error(f"Error in mouse move handler: {e}", exc_info=True)
 
     def on_data_received(self, tag_name, model_name, values, sample_rate, frame_index):
         if self.model_name != model_name or self.channel_index is None:
