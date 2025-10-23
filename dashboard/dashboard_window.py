@@ -160,12 +160,12 @@ class DashboardWindow(QWidget):
         }
         QMdiSubWindow {
             background-color: #ebeef2;
-            border: 5px solid #2c3e50;
-            border-radius: 5px;
+            border:none;
+            border-radius: 10px;
         }
         QMdiSubWindow > QWidget {
-            background-color: yellow;
             color: #ecf0f1;
+            border: 2px solid #27344d;
         }
         """)
 
@@ -226,6 +226,12 @@ class DashboardWindow(QWidget):
         tree_layout.setContentsMargins(0, 0, 0, 0)
         tree_layout.setSpacing(0)
 
+        # Create a container for the sidebar header
+        header = QWidget()
+        header.setFixedHeight(40)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(5, 5, 5, 5)
+        
         # Toggle button for sidebar
         self.toggle_sidebar_btn = QPushButton("☰")
         self.toggle_sidebar_btn.setFixedSize(30, 30)
@@ -234,8 +240,9 @@ class DashboardWindow(QWidget):
                 background-color: #2c3e50;
                 color: white;
                 border: none;
+                border-radius: 15px;
                 font-size: 16px;
-                border-radius: 4px;
+                font-weight: bold;
             }
             QPushButton:hover {
                 background-color: #4a90e2;
@@ -243,14 +250,33 @@ class DashboardWindow(QWidget):
         """)
         self.toggle_sidebar_btn.clicked.connect(self.toggle_sidebar)
         
-        # Header with toggle button
-        header = QWidget()
-        header.setFixedHeight(40)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(5, 5, 5, 5)
+        # Add toggle button to header
         header_layout.addWidget(self.toggle_sidebar_btn)
         header_layout.addStretch()
+        
+        # Create a container for collapsed sidebar icons
+        self.collapsed_icons = QWidget()
+        self.collapsed_icons.setFixedWidth(50)
+        self.collapsed_icons.setStyleSheet("background-color: #232629;")
+        collapsed_layout = QVBoxLayout(self.collapsed_icons)
+        collapsed_layout.setContentsMargins(0, 20, 0, 0)
+        collapsed_layout.setSpacing(15)
+        
+        # Create circular icon buttons
+        self.folder_btn = self._create_icon_button("📁", "Project")
+        self.model_btn = self._create_icon_button("🖥️", "Model")
+        self.channel_btn = self._create_icon_button("📡", "Channel")
+        
+        # Add buttons to collapsed layout
+        collapsed_layout.addWidget(self.folder_btn, 0, Qt.AlignCenter)
+        collapsed_layout.addWidget(self.model_btn, 0, Qt.AlignCenter)
+        collapsed_layout.addWidget(self.channel_btn, 0, Qt.AlignCenter)
+        collapsed_layout.addStretch()
+        
+        # Add widgets to tree layout
         tree_layout.addWidget(header)
+        tree_layout.addWidget(self.collapsed_icons)
+        self.collapsed_icons.setVisible(False)
 
         # Add tree view
         self.tree_view = TreeView(self)
@@ -298,6 +324,28 @@ class DashboardWindow(QWidget):
 
         main_layout.addWidget(self.console_container)
 
+    def _create_icon_button(self, icon, tooltip):
+        """Create a circular icon button for the collapsed sidebar."""
+        btn = QPushButton(icon)
+        btn.setFixedSize(36, 36)
+        btn.setToolTip(tooltip)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2c3e50;
+                color: white;
+                border: none;
+                border-radius: 18px;
+                font-size: 16px;
+                font-weight: bold;
+                padding: 0;
+                margin: 0;
+            }
+            QPushButton:hover {
+                background-color: #4a90e2;
+            }
+        """)
+        return btn
+
     def toggle_sidebar(self):
         """Toggle the sidebar between collapsed and expanded states."""
         self.sidebar_collapsed = not self.sidebar_collapsed
@@ -306,7 +354,7 @@ class DashboardWindow(QWidget):
     def update_sidebar(self):
         """Update the sidebar state (collapsed/expanded) with animation."""
         # Update button icon
-        self.toggle_sidebar_btn.setText("☰" if self.sidebar_collapsed else "✕")
+        self.toggle_sidebar_btn.setText("✕" if self.sidebar_collapsed else "☰")
         
         # Animate the width change
         self.animation = QPropertyAnimation(self.tree_container, b"minimumWidth")
@@ -316,15 +364,21 @@ class DashboardWindow(QWidget):
         if self.sidebar_collapsed:
             self.animation.setStartValue(300)  # Expanded width
             self.animation.setEndValue(50)     # Collapsed width
-            self.tree_view.setVisible(False)
+            # Show/hide appropriate widgets
+            def on_collapse_finished():
+                self.tree_view.setVisible(False)
+                self.collapsed_icons.setVisible(True)
+            self.animation.finished.connect(on_collapse_finished, Qt.QueuedConnection)
         else:
             self.animation.setStartValue(50)   # Collapsed width
             self.animation.setEndValue(300)    # Expanded width
+            # Show/hide appropriate widgets
+            self.collapsed_icons.setVisible(False)
             self.tree_view.setVisible(True)
-            
+        
         self.animation.start()
         
-        # Update the splitter sizes
+        # Update the splitter sizes after animation completes
         QTimer.singleShot(200, self.update_splitter_sizes)
 
     def update_splitter_sizes(self):
