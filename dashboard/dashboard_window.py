@@ -64,6 +64,9 @@ class DashboardWindow(QWidget):
     project_changed = pyqtSignal(str)
     saving_state_changed = pyqtSignal(bool)
 
+    # Signal emitted when sidebar is toggled (collapsed/expanded)
+    sidebar_toggled = pyqtSignal(bool)  # True if collapsed, False if expanded
+    
     def __init__(self, db, email, auth_window=None):
         super().__init__()
         self.db = db
@@ -349,12 +352,13 @@ class DashboardWindow(QWidget):
     def toggle_sidebar(self):
         """Toggle the sidebar between collapsed and expanded states."""
         self.sidebar_collapsed = not self.sidebar_collapsed
+        self.sidebar_toggled.emit(self.sidebar_collapsed)
         self.update_sidebar()
 
     def update_sidebar(self):
         """Update the sidebar state (collapsed/expanded) with animation."""
         # Update button icon
-        self.toggle_sidebar_btn.setText("✕" if self.sidebar_collapsed else "☰")
+        self.toggle_sidebar_btn.setText("☰" if self.sidebar_collapsed else "☰")
         
         # Animate the width change
         self.animation = QPropertyAnimation(self.tree_container, b"minimumWidth")

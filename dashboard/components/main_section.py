@@ -11,6 +11,11 @@ class MainSection(QWidget):
         self.initUI()
         self.parent.project_changed.connect(self.on_project_changed)
         self.parent.sub_tool_bar.layout_selected.connect(self.on_layout_selected)
+        # Connect to the main window's sidebar toggle signal if it exists
+        if hasattr(self.parent, 'sidebar_toggled'):
+            self.parent.sidebar_toggled.connect(self.on_sidebar_toggled)
+        # Store the last known viewport size
+        self.last_viewport_size = self.scroll_area.viewport().size()
 
     def initUI(self):
         self.layout = QVBoxLayout()
@@ -136,6 +141,23 @@ class MainSection(QWidget):
         except Exception as e:
             logging.error(f"Error maximizing subwindow {subwindow.windowTitle()}: {str(e)}")
 
+    def on_sidebar_toggled(self, visible):
+        """Handle sidebar toggle events by rearranging the layout."""
+        # Store the current viewport size
+        self.last_viewport_size = self.scroll_area.viewport().size()
+        # Use a single-shot timer to allow the UI to update before rearranging
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(100, self.arrange_layout)
+
+    def resizeEvent(self, event):
+        """Handle window resize events to update the layout."""
+        super().resizeEvent(event)
+        # Only update if the viewport size has actually changed
+        current_size = self.scroll_area.viewport().size()
+        if current_size != self.last_viewport_size:
+            self.last_viewport_size = current_size
+            self.arrange_layout()
+
     def arrange_layout(self, layout=None):
         try:
             if self.current_widget:
@@ -153,17 +175,31 @@ class MainSection(QWidget):
                 if subwindow.isMaximized():
                     logging.debug(f"Skipping arrangement due to maximized subwindow: {subwindow.windowTitle()}")
                     return
+            
             rows, cols = map(int, self.current_layout.split('x'))
-            viewport_width = self.scroll_area.viewport().width()
-            viewport_height = self.scroll_area.viewport().height()
+            viewport = self.scroll_area.viewport()
+            viewport_width = viewport.width()
+            viewport_height = viewport.height()
+            
+            # Adjust viewport size to account for scrollbars if they are visible
+            scrollbar_width = self.scroll_area.verticalScrollBar().width() if self.scroll_area.verticalScrollBar().isVisible() else 0
+            scrollbar_height = self.scroll_area.horizontalScrollBar().height() if self.scroll_area.horizontalScrollBar().isVisible() else 0
+            
+            # Calculate available space considering scrollbars
+            available_width = viewport_width - scrollbar_width
+            available_height = viewport_height - scrollbar_height
+            
             MIN_SUBWINDOW_WIDTH = 250
             MIN_SUBWINDOW_HEIGHT = 150
             GAP = 5
-            subwindow_width = max((viewport_width - (cols + 1) * GAP) // cols, MIN_SUBWINDOW_WIDTH)
-            subwindow_height = max((viewport_height - (rows + 1) * GAP) // rows, MIN_SUBWINDOW_HEIGHT)
+            
+            # Calculate subwindow dimensions based on available space
+            subwindow_width = max((available_width - (cols + 1) * GAP) // cols, MIN_SUBWINDOW_WIDTH)
+            subwindow_height = max((available_height - (rows + 1) * GAP) // rows, MIN_SUBWINDOW_HEIGHT)
+            
             total_subwindows = len(subwindows)
-            subwindows_per_page = rows * cols
             total_rows_needed = (total_subwindows + cols - 1) // cols
+            
             for idx, subwindow in enumerate(subwindows):
                 row = idx // cols
                 col = idx % cols
@@ -172,10 +208,17 @@ class MainSection(QWidget):
                 subwindow.setGeometry(x, y, subwindow_width, subwindow_height)
                 subwindow.showNormal()
                 logging.debug(f"Arranged subwindow {subwindow.windowTitle()} at ({x}, {y}) with size ({subwindow_width}x{subwindow_height})")
-            total_width = viewport_width + GAP * 2
+            
+            # Calculate total content size needed
+            total_width = cols * (subwindow_width + GAP) + GAP
             total_height = total_rows_needed * (subwindow_height + GAP) + GAP
+            
+            # Set minimum size to ensure scrollbars appear when needed
             self.mdi_area.setMinimumSize(total_width, total_height)
             self.mdi_area.update()
             logging.info(f"Arranged {len(subwindows)} subwindows in {self.current_layout} grid")
+            
         except Exception as e:
             logging.error(f"Error in arrange_layout: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
