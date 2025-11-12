@@ -1069,39 +1069,67 @@ class TimeReportFeature:
         if self.active_line_idx is None:
             return
         # Ensure idx is valid
-        if not (0 <= idx < len(self.plot_widgets)):
-             return
-        pos = evt[0]
-        if not self.plot_widgets[idx].sceneBoundingRect().contains(pos):
+        if not 0 <= idx < len(self.plots):
             return
-        mouse_point = self.plot_widgets[idx].plotItem.vb.mapSceneToView(pos)
-        x = mouse_point.x() # This is the timestamp
-
-        # Clamp x to the actual data range for better UX
-        if len(self.channel_times) > 0:
-            x = np.clip(x, self.channel_times[0], self.channel_times[-1])
-        else:
-            # If no data, don't show line
-            for vline in self.vlines:
-                vline.setVisible(False)
-            return
-
-        # Update all vertical lines
-        for vline in self.vlines:
-            vline.setPos(x)
-            vline.setVisible(True)
-
-    def get_widget(self):
-        return self.widget
-
-    def cleanup(self):
+            
+        # Get the plot item that received the event
+        plot_item = self.plots[idx]
+        
+        # Convert mouse position to plot coordinates
+        pos = evt[0]  # Get the position from the event
+        if plot_item.sceneBoundingRect().contains(pos):
+            mouse_point = plot_item.vb.mapSceneToView(pos)
+            x = mouse_point.x()
+            
+            # Update the vertical line position
+            if 0 <= idx < len(self.vlines):
+                self.vlines[idx].setPos(x)
+                
+            # Update the plot title with the current x-value
+            if hasattr(self, 'plot_widgets') and idx < len(self.plot_widgets):
+                plot_widget = self.plot_widgets[idx]
+                if plot_widget is not None:
+                    plot_widget.setTitle(f"Time: {x:.3f} s")
+        
+    def open_frequency_plot(self):
+        """Open a frequency plot with the current time series data."""
         try:
-            self.clear_plots()
-            if self.widget:
-                self.widget.setParent(None)
-                self.widget.deleteLater()
-            logging.debug("TimeReportFeature cleaned up")
+            if not hasattr(self, 'data') or not self.data or len(self.data) <= len(self.channel_names):
+                QMessageBox.warning(self.parent, "No Data", "No frequency data available to plot.")
+                return
+
+            # Get the frequency data (assuming it's the channel after the last named channel)
+            freq_channel_idx = len(self.channel_names)
+            if freq_channel_idx >= len(self.data):
+                QMessageBox.warning(self.parent, "Error", "Frequency channel not found in data.")
+                return
+
+            # Create and show the frequency plot window
+            self.frequency_plot_window = QMainWindow(self.parent)
+            self.frequency_plot_window.setWindowTitle(f"Frequency Analysis - {self.selected_filename}")
+            self.frequency_plot_window.setMinimumSize(800, 600)
+            
+            # Import here to avoid circular imports
+            from dashboard.components.frequencyplot import FrequencyPlot
+            
+            # Prepare time and frequency data
+            time_data = self.channel_times  # Time values (x-axis)
+            freq_data = self.data[freq_channel_idx]  # Frequency values (y-axis)
+            
+            # Create the frequency plot widget with the data
+            freq_plot = FrequencyPlot(
+                parent=self.frequency_plot_window,
+                project_name=self.project_name,
+                model_name=self.model_name,
+                filename=self.selected_filename,
+                time_data=time_data,
+                frequency_data=freq_data
+            )
+            
+            # Set the central widget and show the window
+            self.frequency_plot_window.setCentralWidget(freq_plot)
+            self.frequency_plot_window.show()
+            
         except Exception as e:
-            logging.error(f"Error during cleanup: {str(e)}", exc_info=True)
-            if self.console:
-                self.console.append_to_console(f"Error during cleanup: {str(e)}")
+            logging.error(f"Error opening frequency plot: {str(e)}")
+            QMessageBox.critical(self.parent, "Error", f"Failed to open frequency plot: {str(e)}")

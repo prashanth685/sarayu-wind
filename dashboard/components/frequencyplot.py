@@ -134,7 +134,7 @@ class FrequencyPlot(QWidget):
 
     def initialize_data(self):
         try:
-            messages = self.db.get_history_messages(self.project_name, self.model_name, filename=self.filename)
+            messages = self.db.get_history_messages(self.project_name, self.model_name, filename=self.filename) 
             if not messages:
                 logging.error(f"No history messages found for {self.filename}")
                 return
@@ -142,19 +142,36 @@ class FrequencyPlot(QWidget):
             self.current_records = sorted(messages, key=lambda x: x.get("frameIndex", 0))
             self.filtered_records = self.current_records.copy()
 
-            self.time_data = [record.get("frameIndex", 0) for record in self.current_records]
-            self.frequency_data = [record.get("messageFrequency", 0) for record in self.current_records]
+            # Extract time and frequency data, handling both messageFrequency and tacho channel data
+            self.time_data = []
+            self.frequency_data = []
+            
+            for record in self.current_records:
+                frame_index = record.get("frameIndex", 0)
+                # First try to get frequency from messageFrequency
+                freq = record.get("messageFrequency", 0)
+                # If not available, try to get from tacho channel data
+                if not freq and "tachoChannels" in record and record["tachoChannels"]:
+                    # Get the first tacho channel's frequency
+                    tacho_data = record["tachoChannels"][0]
+                    if "frequency" in tacho_data:
+                        freq = tacho_data["frequency"]
+                
+                self.time_data.append(frame_index)
+                self.frequency_data.append(float(freq) if freq else 0)
 
-            if not self.start_time:
+            if not self.start_time and self.current_records:
                 first_record = min(self.current_records, key=lambda x: (self.parse_time(x.get("createdAt")) or datetime.datetime.min).timestamp())
                 self.start_time = self.parse_time(first_record.get("createdAt"))
-            if not self.end_time:
+            if not self.end_time and self.current_records:
                 last_record = max(self.current_records, key=lambda x: (self.parse_time(x.get("createdAt")) or datetime.datetime.min).timestamp())
                 self.end_time = self.parse_time(last_record.get("createdAt"))
 
             self.filter_and_plot_data()
         except Exception as e:
             logging.error(f"Error initializing: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
 
     def filter_and_plot_data(self):
         try:
@@ -162,23 +179,54 @@ class FrequencyPlot(QWidget):
                 return
 
             all_frame_indices = [r.get("frameIndex", 0) for r in self.current_records]
-            min_frame = min(all_frame_indices)
-            max_frame = max(all_frame_indices)
-            frame_range = max_frame - min_frame if max_frame > min_frame else 1
+            min_frame = min(all_frame_indices) if all_frame_indices else 0
+            max_frame = max(all_frame_indices) if all_frame_indices else 0
+            frame_range = max(max_frame - min_frame, 1)  # Ensure at least 1 to avoid division by zero
             lower_frame = min_frame + (frame_range * self.lower_time_percentage / 100.0)
             upper_frame = min_frame + (frame_range * self.upper_time_percentage / 100.0)
 
-            self.filtered_records = [record for record in self.current_records if lower_frame <= record.get("frameIndex", 0) <= upper_frame]
-
-            self.time_data = [record.get("frameIndex", 0) for record in self.current_records]
-            self.frequency_data = [record.get("messageFrequency", 0) for record in self.current_records]
+            # Filter records based on frame range
+            filtered_indices = []
+            filtered_frequencies = []
+            
+            for record in self.current_records:
+                frame_index = record.get("frameIndex", 0)
+                if lower_frame <= frame_index <= upper_frame:
+                    # First try to get frequency from messageFrequency
+                    freq = record.get("messageFrequency", 0)
+                    # If not available, try to get from tacho channel data
+                    if not freq and "tachoChannels" in record and record["tachoChannels"]:
+                        # Get the first tacho channel's frequency
+                        tacho_data = record["tachoChannels"][0]
+                        if "frequency" in tacho_data:
+                            freq = tacho_data["frequency"]
+                    
+                    filtered_indices.append(frame_index)
+                    filtered_frequencies.append(float(freq) if freq else 0)
 
             self.ax.clear()
-            self.ax.plot(self.time_data, self.frequency_data, marker='o', linestyle='-', color='b', label='Frequency')
+            
+            if filtered_indices and filtered_frequencies:
+                self.ax.plot(filtered_indices, filtered_frequencies, marker='o', linestyle='-', color='b', label='Frequency')
+                
+                # Add a second y-axis for RPM if needed
+                if any(freq > 0 for freq in filtered_frequencies):
+                    ax2 = self.ax.twinx()
+                    ax2.plot(filtered_indices, [freq * 60 for freq in filtered_frequencies], 
+                            marker='x', linestyle='--', color='r', alpha=0.5, label='RPM')
+                    ax2.set_ylabel('RPM', color='r')
+                    ax2.tick_params(axis='y', labelcolor='r')
+                    # Add legend for both axes
+                    lines1, labels1 = self.ax.get_legend_handles_labels()
+                    lines2, labels2 = ax2.get_legend_handles_labels()
+                    self.ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
+                else:
+                    self.ax.legend()
+            
             self.ax.set_xlabel('Frame Index')
-            self.ax.set_ylabel('Frequency')
+            self.ax.set_ylabel('Frequency (Hz)')
             self.ax.set_title('Frequency vs Frame Index')
-            self.ax.legend()
+            self.ax.grid(True)
 
             # If crosshair was locked previously, re-draw at the locked position
             if self.is_crosshair_locked and self.locked_crosshair_position is not None:
@@ -186,9 +234,12 @@ class FrequencyPlot(QWidget):
                 self.draw_crosshair(x, y, force=True)
 
             self.canvas.draw()
-            logging.debug(f"Plotted {len(self.current_records)} data points")
+            logging.debug(f"Plotted {len(filtered_indices)} data points")
+            
         except Exception as e:
             logging.error(f"Error filtering and plotting: {str(e)}")
+            import traceback
+            logging.error(traceback.format_exc())
 
     def update_labels(self):
         self.lower_time_percentage = self.start_slider.value()
