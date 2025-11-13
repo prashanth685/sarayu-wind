@@ -517,36 +517,91 @@ class FrequencyPlot(QWidget):
             mb_err.exec_()
 
     def _create_styled_messagebox(self, title: str, text: str, icon=QMessageBox.Information, buttons=QMessageBox.Ok, default=QMessageBox.Ok) -> QMessageBox:
-        mb = QMessageBox(self)
-        mb.setIcon(icon)
+        # Create the message box
+        mb = QMessageBox()
         mb.setWindowTitle(title)
-        # Use rich text to improve readability
         mb.setText(f"<div style='font-size:14px; color:#333333;'><b>{title}</b></div>")
-        mb.setInformativeText(text.replace("\n", "<br/>") )
+        mb.setInformativeText(text.replace("\n", "<br/>"))
+        mb.setIcon(icon)
         mb.setStandardButtons(buttons)
-        mb.setDefaultButton(default)
-        mb.setStyleSheet(
-            """
+        
+        # Set default button
+        if default == QMessageBox.Yes:
+            mb.setDefaultButton(QMessageBox.Yes)
+        elif default == QMessageBox.No:
+            mb.setDefaultButton(QMessageBox.No)
+        elif default == QMessageBox.Ok:
+            mb.setDefaultButton(QMessageBox.Ok)
+        elif default == QMessageBox.Cancel:
+            mb.setDefaultButton(QMessageBox.Cancel)
+        
+        # Apply stylesheet with !important to override any default styles
+        mb.setStyleSheet("""
             QMessageBox {
                 background-color: #ffffff;
-                border: 1px solid #dcdfe6;
+                border: 2px solid #4a90e2;
                 border-radius: 8px;
-                padding: 8px;
+                padding: 12px;
+                min-width: 400px;
             }
             QMessageBox QLabel {
                 color: #333333;
                 font-size: 14px;
+                padding: 5px;
             }
             QMessageBox QPushButton {
-                min-width: 88px;
-                padding: 6px 12px;
-                border-radius: 4px;
-                background-color: #4a90e2;
-                color: #ffffff;
-                border: none;
+                min-width: 100px !important;
+                padding: 8px 16px !important;
+                margin: 5px !important;
+                border-radius: 4px !important;
+                font-weight: bold !important;
+                border: 1px solid #357abd !important;
+                background-color: #4a90e2 !important;
+                color: white !important;
             }
-            QMessageBox QPushButton:hover { background-color: #357abd; }
-            QMessageBox QPushButton:pressed { background-color: #2c5d9b; }
-            """
-        )
+            QMessageBox QPushButton:hover {
+                background-color: #357abd !important;
+            }
+            QMessageBox QPushButton:pressed {
+                background-color: #2c5d9b !important;
+            }
+            /* Specific button styles */
+            QMessageBox QPushButton[text="OK"],
+            QMessageBox QPushButton[text="&Yes"],
+            QMessageBox QPushButton[text="Yes"],
+            QMessageBox QPushButton[text="Confirm"],
+            QMessageBox QPushButton[text="&No"],
+            QMessageBox QPushButton[text="No"],
+            QMessageBox QPushButton[text="Cancel"] {
+                min-width: 100px !important;
+                padding: 8px 16px !important;
+                margin: 5px !important;
+                border-radius: 4px !important;
+                font-weight: bold !important;
+                border: 1px solid #357abd !important;
+                background-color: #4a90e2 !important;
+                color: white !important;
+            }
+            QMessageBox QPushButton[text="OK"]:hover,
+            QMessageBox QPushButton[text="&Yes"]:hover,
+            QMessageBox QPushButton[text="Yes"]:hover,
+            QMessageBox QPushButton[text="Confirm"]:hover,
+            QMessageBox QPushButton[text="&No"]:hover,
+            QMessageBox QPushButton[text="No"]:hover,
+            QMessageBox QPushButton[text="Cancel"]:hover {
+                background-color: #357abd !important;
+            }
+            QMessageBox QPushButton[text="OK"]:pressed,
+            QMessageBox QPushButton[text="&Yes"]:pressed,
+            QMessageBox QPushButton[text="Yes"]:pressed,
+            QMessageBox QPushButton[text="Confirm"]:pressed,
+            QMessageBox QPushButton[text="&No"]:pressed,
+            QMessageBox QPushButton[text="No"]:pressed,
+            QMessageBox QPushButton[text="Cancel"]:pressed {
+                background-color: #2c5d9b !important;
+            }
+        """)
+        
+        # Force style update
+        mb.setStyle(mb.style())
         return mb

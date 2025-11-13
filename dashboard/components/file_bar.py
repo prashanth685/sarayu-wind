@@ -59,7 +59,6 @@ class FileBar(QToolBar):
             "Save": QAction("Save", self),
             "Settings": QAction("Settings", self),
             "Refresh": QAction("Refresh", self),
-            "↪️ Exit": QAction("↪️ Exit", self)
         }
 
         action_configs = [
@@ -84,29 +83,6 @@ class FileBar(QToolBar):
         self.addWidget(spacer)
 
         # Add Exit action at far right
-        exit_action = self.actions["↪️ Exit"]
-        exit_action.setToolTip("Exit Application")
-        exit_action.triggered.connect(self.exit_triggered.emit)
-        self.addAction(exit_action)
-
-        # Get the toolbutton for the Exit action and apply red background
-        self.exit_button = self.widgetForAction(exit_action)
-        if isinstance(self.exit_button, QToolButton):
-            self.exit_button.setStyleSheet("""
-                QToolButton {
-                    background-color: #e74c3c;
-                    color: white;
-                }
-                QToolButton:hover {
-                    background-color: #c0392b;
-                }
-                QToolButton:disabled {
-                    background-color: #999;
-                }
-            """)
-
-        self.update_state()
-
     def update_state(self, project_name=None, mqtt_connected=None):
         """Update action states and toolbar appearance based on application state."""
         try:
@@ -115,7 +91,7 @@ class FileBar(QToolBar):
             if mqtt_connected is not None:
                 self.mqtt_connected = mqtt_connected
 
-            always_enabled = ["Home", "Open", "New", "Settings", "↪️ Exit"]
+            always_enabled = ["Home", "Open", "New", "Settings"]
             for name in always_enabled:
                 self.actions[name].setEnabled(True)
 
@@ -150,21 +126,6 @@ class FileBar(QToolBar):
                     color: #666;
                 }}
             """)
-
-            # Re-apply exit button style to ensure it stays red
-            if hasattr(self, 'exit_button') and isinstance(self.exit_button, QToolButton):
-                self.exit_button.setStyleSheet("""
-                    QToolButton {
-                        background-color: #e74c3c;
-                        color: white;
-                    }
-                    QToolButton:hover {
-                        background-color: #c0392b;
-                    }
-                    QToolButton:disabled {
-                        background-color: #999;
-                    }
-                """)
 
             logging.debug(f"FileBar updated: project={self.current_project}, mqtt_connected={self.mqtt_connected}")
         except Exception as e:
