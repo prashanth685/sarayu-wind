@@ -1,12 +1,9 @@
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QPushButton, QSlider, QHBoxLayout, QMessageBox, QSizePolicy
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
+import pyqtgraph as pg
 import numpy as np
 import datetime
 import logging
-import matplotlib.pyplot as plt
 from database import Database
 
 class FrequencyPlot(QWidget):
@@ -47,9 +44,6 @@ class FrequencyPlot(QWidget):
         self.is_dragging_range = False
         self.drag_start_x = 0
 
-        self.crosshair_vline = None
-        self.crosshair_hline = None
-
         self.initUI()
         self.initialize_data()
 
@@ -69,16 +63,28 @@ class FrequencyPlot(QWidget):
         self.title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #333;")
         self.layout.addWidget(self.title_label)
 
-        self.figure = Figure()
-        self.canvas = FigureCanvas(self.figure)
-        self.ax = self.figure.add_subplot(111)
-        # Let the canvas expand in the available space
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.layout.addWidget(self.canvas, stretch=1)
-
-        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
-        self.canvas.mpl_connect('button_press_event', self.on_mouse_click)
-        self.canvas.mpl_connect('axes_leave_event', self.on_mouse_leave)
+        # Create PyQtGraph plot widget
+        self.plot_widget = pg.PlotWidget()
+        self.plot_widget.setBackground('w')
+        self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
+        self.plot_widget.setLabel('left', 'Frequency', units='Hz')
+        self.plot_widget.setLabel('bottom', 'Time')
+        self.plot_widget.setTitle('Tacho Frequency vs Time', size='14pt', bold=True)
+        
+        # Let the plot widget expand in the available space
+        self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.layout.addWidget(self.plot_widget, stretch=1)
+        
+        # Enable crosshair
+        self.plot_widget.setMouseEnabled(x=True, y=True)
+        self.vLine = pg.InfiniteLine(angle=90, movable=False)
+        self.hLine = pg.InfiniteLine(angle=0, movable=False)
+        self.plot_widget.addItem(self.vLine, ignoreBounds=True)
+        self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+        
+        # Proxy for crosshair
+        self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
+        self.plot_widget.scene().sigMouseClicked.connect(self.mouseClicked)
 
         self.slider_widget = QWidget()
         self.slider_layout = QHBoxLayout()
@@ -158,7 +164,6 @@ class FrequencyPlot(QWidget):
                     timestamp = timestamp.timestamp()
                 
                 # Extract frequency from tacho channel data (similar to time_report.py approach)
-                freq = 0
                 message = record.get("message", [])
                 num_main_channels = record.get("numberOfChannels", 0)
                 taco_channel_count = record.get("tacoChannelCount", 0)
@@ -169,18 +174,22 @@ class FrequencyPlot(QWidget):
                     # Calculate start index of tacho frequency data
                     tacho_start = num_main_channels * sampling_size
                     tacho_end = min(tacho_start + sampling_size, len(message))
-                    # Extract the entire tacho frequency channel and take the mean value
+                    # Extract the entire tacho frequency channel and add ALL values (not just mean)
                     if tacho_start < len(message) and tacho_end > tacho_start:
                         tacho_freq_channel = message[tacho_start:tacho_end]
-                        # Use the mean value of the tacho frequency channel as the frequency
-                        freq = np.mean(tacho_freq_channel) if tacho_freq_channel else 0
-                
-                # Fallback to messageFrequency if available
-                if freq == 0:
+                        # Add each frequency value with its timestamp
+                        base_time = timestamp
+                        sample_rate = record.get("samplingRate", 1000)  # Default to 1000 Hz if not specified
+                        time_step = 1.0 / float(sample_rate)
+                        
+                        for i, freq_val in enumerate(tacho_freq_channel):
+                            self.time_data.append(base_time + i * time_step)
+                            self.frequency_data.append(float(freq_val) if freq_val else 0)
+                else:
+                    # Fallback to messageFrequency if available
                     freq = record.get("messageFrequency", 0)
-                
-                self.time_data.append(timestamp)
-                self.frequency_data.append(float(freq) if freq else 0)
+                    self.time_data.append(timestamp)
+                    self.frequency_data.append(float(freq) if freq else 0)
 
             if not self.start_time and self.current_records:
                 first_record = min(self.current_records, key=lambda x: (self.parse_time(x.get("createdAt")) or datetime.datetime.min).timestamp())
@@ -189,6 +198,7 @@ class FrequencyPlot(QWidget):
                 last_record = max(self.current_records, key=lambda x: (self.parse_time(x.get("createdAt")) or datetime.datetime.min).timestamp())
                 self.end_time = self.parse_time(last_record.get("createdAt"))
 
+            # Initial plot
             self.filter_and_plot_data()
         except Exception as e:
             logging.error(f"Error initializing: {str(e)}")
@@ -200,6 +210,15 @@ class FrequencyPlot(QWidget):
             if not self.current_records or not self.time_data:
                 return
 
+            # Clear the plot
+            self.plot_widget.clear()
+            
+            # Re-add crosshair lines after clearing
+            self.vLine = pg.InfiniteLine(angle=90, movable=False)
+            self.hLine = pg.InfiniteLine(angle=0, movable=False)
+            self.plot_widget.addItem(self.vLine, ignoreBounds=True)
+            self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+
             # Use actual timestamps for filtering
             min_time = min(self.time_data) if self.time_data else 0
             max_time = max(self.time_data) if self.time_data else 0
@@ -207,72 +226,54 @@ class FrequencyPlot(QWidget):
             lower_time = min_time + (time_range * self.lower_time_percentage / 100.0)
             upper_time = min_time + (time_range * self.upper_time_percentage / 100.0)
 
-            # Filter records based on time range
+            # Filter data based on time range
             filtered_times = []
             filtered_frequencies = []
             
-            for i, record in enumerate(self.current_records):
-                if i < len(self.time_data):
-                    timestamp = self.time_data[i]
-                    if lower_time <= timestamp <= upper_time:
-                        # Extract frequency from tacho channel data (similar to time_report.py approach)
-                        freq = 0
-                        message = record.get("message", [])
-                        num_main_channels = record.get("numberOfChannels", 0)
-                        taco_channel_count = record.get("tacoChannelCount", 0)
-                        sampling_size = record.get("samplingSize", 0)
-                        
-                        # Tacho frequency data is stored after main channels in the flattened message
-                        if taco_channel_count > 0 and sampling_size > 0 and len(message) >= num_main_channels * sampling_size:
-                            # Calculate start index of tacho frequency data
-                            tacho_start = num_main_channels * sampling_size
-                            tacho_end = min(tacho_start + sampling_size, len(message))
-                            # Extract the entire tacho frequency channel and take the mean value
-                            if tacho_start < len(message) and tacho_end > tacho_start:
-                                tacho_freq_channel = message[tacho_start:tacho_end]
-                                # Use the mean value of the tacho frequency channel as the frequency
-                                freq = np.mean(tacho_freq_channel) if tacho_freq_channel else 0
-                        
-                        # Fallback to messageFrequency if available
-                        if freq == 0:
-                            freq = record.get("messageFrequency", 0)
-                        
-                        filtered_times.append(timestamp)
-                        filtered_frequencies.append(float(freq) if freq else 0)
-
-            self.ax.clear()
+            for i, timestamp in enumerate(self.time_data):
+                if lower_time <= timestamp <= upper_time:
+                    filtered_times.append(timestamp)
+                    filtered_frequencies.append(self.frequency_data[i])
             
             if filtered_times and filtered_frequencies:
-                # Convert timestamps to datetime objects for better x-axis formatting
-                time_labels = [datetime.datetime.fromtimestamp(t) for t in filtered_times]
-                self.ax.plot(time_labels, filtered_frequencies, marker='o', linestyle='-', color='b', label='Tacho Frequency', linewidth=2, markersize=4)
+                # Convert to numpy arrays for plotting
+                time_array = np.array(filtered_times)
+                freq_array = np.array(filtered_frequencies)
                 
-                # Format the plot
-                self.ax.set_xlabel('Time', fontsize=12, fontweight='bold')
-                self.ax.set_ylabel('Frequency (Hz)', fontsize=12, fontweight='bold')
-                self.ax.set_title('Tacho Frequency vs Time', fontsize=14, fontweight='bold')
-                self.ax.grid(True, alpha=0.3)
+                # Create plot item
+                self.plot_widget.plot(time_array, freq_array, 
+                                     pen=pg.mkPen('b', width=2),
+                                     symbol='o',
+                                     symbolSize=3,
+                                     symbolBrush='b',
+                                     name='Tacho Frequency')
+                
+                # Set axis labels and title
+                self.plot_widget.setLabel('left', 'Frequency', units='Hz')
+                self.plot_widget.setLabel('bottom', 'Time')
+                self.plot_widget.setTitle('Tacho Frequency vs Time', size='14pt', bold=True)
                 
                 # Format x-axis to show time properly
-                import matplotlib.dates as mdates
-                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
-                self.ax.xaxis.set_major_locator(mdates.SecondLocator(interval=max(1, int(len(filtered_times)/10))))
-                plt.setp(self.ax.xaxis.get_majorticklabels(), rotation=0, ha='right')
+                axis = self.plot_widget.getAxis('bottom')
+                # Create string ticks from timestamps
+                num_ticks = min(10, len(time_array))
+                if num_ticks > 1:
+                    tick_indices = np.linspace(0, len(time_array)-1, num_ticks, dtype=int)
+                    tick_texts = [datetime.datetime.fromtimestamp(time_array[i]).strftime('%H:%M:%S') for i in tick_indices]
+                    tick_positions = time_array[tick_indices]
+                    axis.setTicks([list(zip(tick_positions, tick_texts))])
                 
-                # Add legend
-                self.ax.legend(loc='upper right')
-
-            self.canvas.draw()
-            
-            # If crosshair was locked previously, re-draw at the locked position
-            if self.is_crosshair_locked and self.locked_crosshair_position is not None:
-                x, y = self.locked_crosshair_position
-                self.draw_crosshair(x, y, force=True)
-            
-            logging.debug(f"Plotted {len(filtered_times)} data points")
-            
+                # Update time range labels
+                lower_time_str = datetime.datetime.fromtimestamp(lower_time).strftime('%H:%M:%S')
+                upper_time_str = datetime.datetime.fromtimestamp(upper_time).strftime('%H:%M:%S')
+                
+                self.start_label.setText(f"Start: {lower_time_str}")
+                self.end_label.setText(f"End: {upper_time_str}")
+            else:
+                self.start_label.setText("Start: --:--:--")
+                self.end_label.setText("End: --:--:--")
         except Exception as e:
-            logging.error(f"Error filtering and plotting: {str(e)}")
+            logging.error(f"Error in filter_and_plot_data: {str(e)}")
             import traceback
             logging.error(traceback.format_exc())
 
@@ -297,107 +298,46 @@ class FrequencyPlot(QWidget):
             self.end_label.setText("End: --:--:--")
         self.debounce_timer.start(self.debounce_delay)
 
-    def on_mouse_move(self, event):
-        if not event.inaxes:
+    def mouseMoved(self, evt):
+        """Handle mouse movement for crosshair"""
+        if not self.is_crosshair_locked and evt:
+            pos = evt[0]  # Get the mouse position
+            if self.plot_widget.plotItem.vb.sceneBoundingRect().contains(pos):
+                mousePoint = self.plot_widget.plotItem.vb.mapSceneToView(pos)
+                x, y = mousePoint.x(), mousePoint.y()
+                
+                # Update crosshair lines
+                self.vLine.setPos(x)
+                self.hLine.setPos(y)
+                
+                # Update status with current values
+                if self.time_data and self.frequency_data:
+                    # Find nearest data point
+                    idx = np.searchsorted(np.array(self.time_data), x)
+                    if 0 <= idx < len(self.time_data):
+                        time_str = datetime.datetime.fromtimestamp(self.time_data[idx]).strftime('%H:%M:%S')
+                        freq = self.frequency_data[idx]
+                        # You could update a status label here if needed
+                        logging.debug(f"Time: {time_str}, Frequency: {freq:.2f} Hz")
+
+    def mouseClicked(self, evt):
+        """Handle mouse click for locking/unlocking crosshair"""
+        if not evt:
             return
-        now = datetime.datetime.now()
-        if (now - self.last_mouse_move).total_seconds() * 1000 < self.mouse_move_debounce_ms:
-            return
-        self.last_mouse_move = now
-
-        if not self.is_crosshair_locked:
-            if event.xdata is None or event.ydata is None:
-                return
-            self.is_crosshair_visible = True
-            self.draw_crosshair(event.xdata, event.ydata)
-        elif self.is_crosshair_locked and self.locked_crosshair_position is not None:
-            x, y = self.locked_crosshair_position
-            self.draw_crosshair(x, y)
-
-        if self.is_dragging_range and event.xdata is not None:
-            self.update_range_on_drag(event.xdata)
-
-    def on_mouse_click(self, event):
-        if not event.inaxes:
-            return
-        if event.xdata is None or event.ydata is None or not np.isfinite(event.xdata) or not np.isfinite(event.ydata):
-            return
-
-        if not self.is_crosshair_locked:
-            self.is_crosshair_locked = True
-            self.locked_crosshair_position = (float(event.xdata), float(event.ydata))
-            self.draw_crosshair(event.xdata, event.ydata)
-            logging.debug(f"Crosshair locked at ({event.xdata}, {event.ydata})")
-        else:
-            self.is_crosshair_locked = False
-            self.locked_crosshair_position = None
-            self.is_crosshair_visible = False
-            self.remove_crosshair()
-            logging.debug("Crosshair unlocked")
-
-    def on_mouse_leave(self, event):
-        if not self.is_crosshair_locked:
-            self.is_crosshair_visible = False
-            self.remove_crosshair()
-
-    def draw_crosshair(self, x, y, force=False):
-        # Validate inputs
-        if x is None or y is None:
-            return
-        
-        # Convert datetime to timestamp if needed for validation
-        if hasattr(x, 'timestamp'):
-            x_numeric = x.timestamp()
-        else:
-            x_numeric = x
             
-        if not np.isfinite(x_numeric) or not np.isfinite(y):
-            return
-        if not force and not self.is_crosshair_visible and not self.is_crosshair_locked:
-            return
-
-        # Remove existing crosshair lines if present
-        try:
-            if self.crosshair_vline is not None and self.crosshair_vline in self.ax.lines:
-                self.crosshair_vline.remove()
-            if self.crosshair_hline is not None and self.crosshair_hline in self.ax.lines:
-                self.crosshair_hline.remove()
-        except Exception:
-            pass
-
-        # Get numeric axis limits
-        try:
-            y0, y1 = self.ax.get_ylim()
-            x0, x1 = self.ax.get_xlim()
-            y0 = float(y0); y1 = float(y1)
-            x0 = float(x0); x1 = float(x1)
-        except Exception:
-            return
-
-        # Build fresh Line2D objects with simple float arrays
-        self.crosshair_vline = Line2D([x_numeric, x_numeric], [y0, y1], color='red', linestyle='--', linewidth=1)
-        self.crosshair_hline = Line2D([x0, x1], [float(y), float(y)], color='red', linestyle='--', linewidth=1)
-
-        self.ax.add_line(self.crosshair_vline)
-        self.ax.add_line(self.crosshair_hline)
-        self.canvas.draw_idle()
-
-    def remove_crosshair(self):
-        changed = False
-        try:
-            if self.crosshair_vline is not None and self.crosshair_vline in self.ax.lines:
-                self.crosshair_vline.remove()
-                changed = True
-        except Exception:
-            pass
-        try:
-            if self.crosshair_hline is not None and self.crosshair_hline in self.ax.lines:
-                self.crosshair_hline.remove()
-                changed = True
-        except Exception:
-            pass
-        if changed:
-            self.canvas.draw_idle()
+        pos = evt.scenePos()
+        if self.plot_widget.plotItem.vb.sceneBoundingRect().contains(pos):
+            mousePoint = self.plot_widget.plotItem.vb.mapSceneToView(pos)
+            x, y = mousePoint.x(), mousePoint.y()
+            
+            if not self.is_crosshair_locked:
+                self.is_crosshair_locked = True
+                self.locked_crosshair_position = (x, y)
+                logging.debug(f"Crosshair locked at ({x:.2f}, {y:.2f})")
+            else:
+                self.is_crosshair_locked = False
+                self.locked_crosshair_position = None
+                logging.debug("Crosshair unlocked")
 
     def start_range_drag(self):
         self.is_dragging_range = True
