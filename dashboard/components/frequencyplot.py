@@ -6,6 +6,7 @@ from matplotlib.lines import Line2D
 import numpy as np
 import datetime
 import logging
+import matplotlib.pyplot as plt
 from database import Database
 
 class FrequencyPlot(QWidget):
@@ -137,27 +138,48 @@ class FrequencyPlot(QWidget):
             messages = self.db.get_history_messages(self.project_name, self.model_name, filename=self.filename) 
             if not messages:
                 logging.error(f"No history messages found for {self.filename}")
-                return
+                return 
 
             self.current_records = sorted(messages, key=lambda x: x.get("frameIndex", 0))
             self.filtered_records = self.current_records.copy()
 
-            # Extract time and frequency data, handling both messageFrequency and tacho channel data
+            # Extract time and frequency data from database records
             self.time_data = []
             self.frequency_data = []
             
             for record in self.current_records:
-                frame_index = record.get("frameIndex", 0)
-                # First try to get frequency from messageFrequency
-                freq = record.get("messageFrequency", 0)
-                # If not available, try to get from tacho channel data
-                if not freq and "tachoChannels" in record and record["tachoChannels"]:
-                    # Get the first tacho channel's frequency
-                    tacho_data = record["tachoChannels"][0]
-                    if "frequency" in tacho_data:
-                        freq = tacho_data["frequency"]
+                # Use actual timestamp instead of frame index
+                timestamp = self.parse_time(record.get("createdAt"))
+                if timestamp is None:
+                    # Fallback to frame index if timestamp is not available
+                    timestamp = record.get("frameIndex", 0)
+                else:
+                    # Convert timestamp to numeric value (seconds since epoch)
+                    timestamp = timestamp.timestamp()
                 
-                self.time_data.append(frame_index)
+                # Extract frequency from tacho channel data (similar to time_report.py approach)
+                freq = 0
+                message = record.get("message", [])
+                num_main_channels = record.get("numberOfChannels", 0)
+                taco_channel_count = record.get("tacoChannelCount", 0)
+                sampling_size = record.get("samplingSize", 0)
+                
+                # Tacho frequency data is stored after main channels in the flattened message
+                if taco_channel_count > 0 and sampling_size > 0 and len(message) >= num_main_channels * sampling_size:
+                    # Calculate start index of tacho frequency data
+                    tacho_start = num_main_channels * sampling_size
+                    tacho_end = min(tacho_start + sampling_size, len(message))
+                    # Extract the entire tacho frequency channel and take the mean value
+                    if tacho_start < len(message) and tacho_end > tacho_start:
+                        tacho_freq_channel = message[tacho_start:tacho_end]
+                        # Use the mean value of the tacho frequency channel as the frequency
+                        freq = np.mean(tacho_freq_channel) if tacho_freq_channel else 0
+                
+                # Fallback to messageFrequency if available
+                if freq == 0:
+                    freq = record.get("messageFrequency", 0)
+                
+                self.time_data.append(timestamp)
                 self.frequency_data.append(float(freq) if freq else 0)
 
             if not self.start_time and self.current_records:
@@ -175,66 +197,79 @@ class FrequencyPlot(QWidget):
 
     def filter_and_plot_data(self):
         try:
-            if not self.current_records:
+            if not self.current_records or not self.time_data:
                 return
 
-            all_frame_indices = [r.get("frameIndex", 0) for r in self.current_records]
-            min_frame = min(all_frame_indices) if all_frame_indices else 0
-            max_frame = max(all_frame_indices) if all_frame_indices else 0
-            frame_range = max(max_frame - min_frame, 1)  # Ensure at least 1 to avoid division by zero
-            lower_frame = min_frame + (frame_range * self.lower_time_percentage / 100.0)
-            upper_frame = min_frame + (frame_range * self.upper_time_percentage / 100.0)
+            # Use actual timestamps for filtering
+            min_time = min(self.time_data) if self.time_data else 0
+            max_time = max(self.time_data) if self.time_data else 0
+            time_range = max(max_time - min_time, 1)  # Ensure at least 1 to avoid division by zero
+            lower_time = min_time + (time_range * self.lower_time_percentage / 100.0)
+            upper_time = min_time + (time_range * self.upper_time_percentage / 100.0)
 
-            # Filter records based on frame range
-            filtered_indices = []
+            # Filter records based on time range
+            filtered_times = []
             filtered_frequencies = []
             
-            for record in self.current_records:
-                frame_index = record.get("frameIndex", 0)
-                if lower_frame <= frame_index <= upper_frame:
-                    # First try to get frequency from messageFrequency
-                    freq = record.get("messageFrequency", 0)
-                    # If not available, try to get from tacho channel data
-                    if not freq and "tachoChannels" in record and record["tachoChannels"]:
-                        # Get the first tacho channel's frequency
-                        tacho_data = record["tachoChannels"][0]
-                        if "frequency" in tacho_data:
-                            freq = tacho_data["frequency"]
-                    
-                    filtered_indices.append(frame_index)
-                    filtered_frequencies.append(float(freq) if freq else 0)
+            for i, record in enumerate(self.current_records):
+                if i < len(self.time_data):
+                    timestamp = self.time_data[i]
+                    if lower_time <= timestamp <= upper_time:
+                        # Extract frequency from tacho channel data (similar to time_report.py approach)
+                        freq = 0
+                        message = record.get("message", [])
+                        num_main_channels = record.get("numberOfChannels", 0)
+                        taco_channel_count = record.get("tacoChannelCount", 0)
+                        sampling_size = record.get("samplingSize", 0)
+                        
+                        # Tacho frequency data is stored after main channels in the flattened message
+                        if taco_channel_count > 0 and sampling_size > 0 and len(message) >= num_main_channels * sampling_size:
+                            # Calculate start index of tacho frequency data
+                            tacho_start = num_main_channels * sampling_size
+                            tacho_end = min(tacho_start + sampling_size, len(message))
+                            # Extract the entire tacho frequency channel and take the mean value
+                            if tacho_start < len(message) and tacho_end > tacho_start:
+                                tacho_freq_channel = message[tacho_start:tacho_end]
+                                # Use the mean value of the tacho frequency channel as the frequency
+                                freq = np.mean(tacho_freq_channel) if tacho_freq_channel else 0
+                        
+                        # Fallback to messageFrequency if available
+                        if freq == 0:
+                            freq = record.get("messageFrequency", 0)
+                        
+                        filtered_times.append(timestamp)
+                        filtered_frequencies.append(float(freq) if freq else 0)
 
             self.ax.clear()
             
-            if filtered_indices and filtered_frequencies:
-                self.ax.plot(filtered_indices, filtered_frequencies, marker='o', linestyle='-', color='b', label='Frequency')
+            if filtered_times and filtered_frequencies:
+                # Convert timestamps to datetime objects for better x-axis formatting
+                time_labels = [datetime.datetime.fromtimestamp(t) for t in filtered_times]
+                self.ax.plot(time_labels, filtered_frequencies, marker='o', linestyle='-', color='b', label='Tacho Frequency', linewidth=2, markersize=4)
                 
-                # Add a second y-axis for RPM if needed
-                if any(freq > 0 for freq in filtered_frequencies):
-                    ax2 = self.ax.twinx()
-                    ax2.plot(filtered_indices, [freq * 60 for freq in filtered_frequencies], 
-                            marker='x', linestyle='--', color='r', alpha=0.5, label='RPM')
-                    ax2.set_ylabel('RPM', color='r')
-                    ax2.tick_params(axis='y', labelcolor='r')
-                    # Add legend for both axes
-                    lines1, labels1 = self.ax.get_legend_handles_labels()
-                    lines2, labels2 = ax2.get_legend_handles_labels()
-                    self.ax.legend(lines1 + lines2, labels1 + labels2, loc='upper right')
-                else:
-                    self.ax.legend()
-            
-            self.ax.set_xlabel('Frame Index')
-            self.ax.set_ylabel('Frequency (Hz)')
-            self.ax.set_title('Frequency vs Frame Index')
-            self.ax.grid(True)
+                # Format the plot
+                self.ax.set_xlabel('Time', fontsize=12, fontweight='bold')
+                self.ax.set_ylabel('Frequency (Hz)', fontsize=12, fontweight='bold')
+                self.ax.set_title('Tacho Frequency vs Time', fontsize=14, fontweight='bold')
+                self.ax.grid(True, alpha=0.3)
+                
+                # Format x-axis to show time properly
+                import matplotlib.dates as mdates
+                self.ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+                self.ax.xaxis.set_major_locator(mdates.SecondLocator(interval=max(1, int(len(filtered_times)/10))))
+                plt.setp(self.ax.xaxis.get_majorticklabels(), rotation=0, ha='right')
+                
+                # Add legend
+                self.ax.legend(loc='upper right')
 
+            self.canvas.draw()
+            
             # If crosshair was locked previously, re-draw at the locked position
             if self.is_crosshair_locked and self.locked_crosshair_position is not None:
                 x, y = self.locked_crosshair_position
                 self.draw_crosshair(x, y, force=True)
-
-            self.canvas.draw()
-            logging.debug(f"Plotted {len(filtered_indices)} data points")
+            
+            logging.debug(f"Plotted {len(filtered_times)} data points")
             
         except Exception as e:
             logging.error(f"Error filtering and plotting: {str(e)}")
@@ -244,18 +279,22 @@ class FrequencyPlot(QWidget):
     def update_labels(self):
         self.lower_time_percentage = self.start_slider.value()
         self.upper_time_percentage = self.end_slider.value()
-        if self.current_records:
-            all_frame_indices = [r.get("frameIndex", 0) for r in self.current_records]
-            min_frame = min(all_frame_indices)
-            max_frame = max(all_frame_indices)
-            frame_range = max(max_frame - min_frame, 0)
-            lower_frame = int(min_frame + (frame_range * self.lower_time_percentage / 100.0))
-            upper_frame = int(min_frame + (frame_range * self.upper_time_percentage / 100.0))
-            self.start_label.setText(f"Start: {lower_frame}")
-            self.end_label.setText(f"End: {upper_frame}")
+        if self.time_data:
+            min_time = min(self.time_data)
+            max_time = max(self.time_data)
+            time_range = max(max_time - min_time, 1)
+            lower_time = min_time + (time_range * self.lower_time_percentage / 100.0)
+            upper_time = min_time + (time_range * self.upper_time_percentage / 100.0)
+            
+            # Convert timestamps to readable format
+            lower_time_str = datetime.datetime.fromtimestamp(lower_time).strftime('%H:%M:%S')
+            upper_time_str = datetime.datetime.fromtimestamp(upper_time).strftime('%H:%M:%S')
+            
+            self.start_label.setText(f"Start: {lower_time_str}")
+            self.end_label.setText(f"End: {upper_time_str}")
         else:
-            self.start_label.setText("Start: 0")
-            self.end_label.setText("End: 0")
+            self.start_label.setText("Start: --:--:--")
+            self.end_label.setText("End: --:--:--")
         self.debounce_timer.start(self.debounce_delay)
 
     def on_mouse_move(self, event):
@@ -305,7 +344,14 @@ class FrequencyPlot(QWidget):
         # Validate inputs
         if x is None or y is None:
             return
-        if not np.isfinite(x) or not np.isfinite(y):
+        
+        # Convert datetime to timestamp if needed for validation
+        if hasattr(x, 'timestamp'):
+            x_numeric = x.timestamp()
+        else:
+            x_numeric = x
+            
+        if not np.isfinite(x_numeric) or not np.isfinite(y):
             return
         if not force and not self.is_crosshair_visible and not self.is_crosshair_locked:
             return
@@ -329,7 +375,7 @@ class FrequencyPlot(QWidget):
             return
 
         # Build fresh Line2D objects with simple float arrays
-        self.crosshair_vline = Line2D([float(x), float(x)], [y0, y1], color='red', linestyle='--', linewidth=1)
+        self.crosshair_vline = Line2D([x_numeric, x_numeric], [y0, y1], color='red', linestyle='--', linewidth=1)
         self.crosshair_hline = Line2D([x0, x1], [float(y), float(y)], color='red', linestyle='--', linewidth=1)
 
         self.ax.add_line(self.crosshair_vline)
@@ -357,7 +403,8 @@ class FrequencyPlot(QWidget):
         self.is_dragging_range = True
         if self.time_data:
             span = (self.time_data[-1] - self.time_data[0]) if len(self.time_data) > 1 else 1
-            self.drag_start_x = self.time_data + span * (self.lower_time_percentage / 100.0)
+            min_time = min(self.time_data)
+            self.drag_start_x = min_time + span * (self.lower_time_percentage / 100.0)
 
     def stop_range_drag(self):
         self.is_dragging_range = False
@@ -370,10 +417,17 @@ class FrequencyPlot(QWidget):
     def update_range_on_drag(self, x):
         if x is None or not self.time_data:
             return
+        
+        # Convert datetime to timestamp if needed
+        if hasattr(x, 'timestamp'):
+            x_numeric = x.timestamp()
+        else:
+            x_numeric = x
+            
         denom = (self.time_data[-1] - self.time_data[0]) if len(self.time_data) > 1 else 1
         if denom == 0:
             return
-        delta_x = x - self.drag_start_x
+        delta_x = x_numeric - self.drag_start_x
         delta_percentage = (delta_x / denom) * 100.0
         new_lower = max(0.0, min(100.0, self.lower_time_percentage + delta_percentage))
         new_upper = max(0.0, min(100.0, self.upper_time_percentage + delta_percentage))
@@ -383,6 +437,42 @@ class FrequencyPlot(QWidget):
             self.start_slider.setValue(int(new_lower))
             self.end_slider.setValue(int(new_upper))
             self.filter_and_plot_data()
+
+    def find_closest_record_by_timestamp(self, selected_timestamp):
+        try:
+            if not self.filtered_records:
+                return None
+            
+            # Find the record with timestamp closest to the selected timestamp
+            closest_record = None
+            min_diff = float('inf')
+            
+            for i, record in enumerate(self.filtered_records):
+                if i < len(self.time_data):
+                    record_timestamp = self.time_data[i]
+                    diff = abs(record_timestamp - selected_timestamp)
+                    if diff < min_diff:
+                        min_diff = diff
+                        closest_record = record
+            
+            if closest_record and closest_record.get("message"):
+                return closest_record
+            
+            # Fallback fetch full record if minimal doc
+            query = {
+                "filename": self.filename,
+                "moduleName": self.model_name,
+                "projectName": self.project_name,
+                "frameIndex": closest_record.get("frameIndex"),
+                "email": self.email
+            }
+            full_records = list(self.db.history_collection.find(query))
+            if full_records:
+                return full_records[0]
+            return closest_record
+        except Exception as e:
+            logging.error(f"Error finding closest record by timestamp: {str(e)}")
+            return None
 
     def find_closest_record(self, selected_frame_index):
         try:
@@ -406,6 +496,16 @@ class FrequencyPlot(QWidget):
         except Exception as e:
             logging.error(f"Error finding closest record: {str(e)}")
             return None
+
+    def get_current_time_range(self):
+        if not self.time_data:
+            return 0, 0
+        min_time = min(self.time_data)
+        max_time = max(self.time_data)
+        time_range = max_time - min_time
+        start_time = min_time + (time_range * self.lower_time_percentage / 100.0) if time_range >= 0 else min_time
+        end_time = min_time + (time_range * self.upper_time_percentage / 100.0) if time_range >= 0 else max_time
+        return start_time, end_time
 
     def get_current_frame_index_range(self):
         if not self.current_records:
@@ -436,8 +536,14 @@ class FrequencyPlot(QWidget):
                 return
 
             x, y = self.locked_crosshair_position
-            selected_frame_index = int(round(x))
-            self.selected_record = self.find_closest_record(selected_frame_index)
+            
+            # Convert datetime to timestamp for finding closest record
+            if hasattr(x, 'timestamp'):
+                selected_timestamp = x.timestamp()
+            else:
+                selected_timestamp = x
+                
+            self.selected_record = self.find_closest_record_by_timestamp(selected_timestamp)
 
             if not self.selected_record:
                 mb = self._create_styled_messagebox(
@@ -451,7 +557,7 @@ class FrequencyPlot(QWidget):
                 logging.info("No record found for locked crosshair position")
                 return
 
-            start_frame_index, end_frame_index = self.get_current_frame_index_range()
+            start_time, end_time = self.get_current_time_range()
 
             selected_data = {
                 "filename": self.filename,
@@ -466,15 +572,21 @@ class FrequencyPlot(QWidget):
                 "samplingSize": self.selected_record.get("samplingSize", 0),
             }
 
+            # Format timestamp for display
+            selected_time_str = datetime.datetime.fromtimestamp(selected_timestamp).strftime('%H:%M:%S')
+            start_time_str = datetime.datetime.fromtimestamp(start_time).strftime('%H:%M:%S')
+            end_time_str = datetime.datetime.fromtimestamp(end_time).strftime('%H:%M:%S')
+
             confirmation_message = (
                 f"Final Confirmation - Range Selection Details:\n\n"
+                f"Selected Time: {selected_time_str}\n"
                 f"Selected Frame Index: {selected_data['frameIndex']}\n"
                 f"Filename: {self.filename}\n"
                 f"Model: {self.model_name}\n"
                 f"Frequency Value: {y:.2f}\n\n"
                 f"Current Range Selection:\n"
-                f" Start Frame Index: {start_frame_index}\n"
-                f" End Frame Index: {end_frame_index}\n"
+                f" Start Time: {start_time_str}\n"
+                f" End Time: {end_time_str}\n"
                 f" Range: {self.lower_time_percentage:.1f}% to {self.upper_time_percentage:.1f}%\n\n"
                 f"Confirm final selection?\n"
                 f"The frequency plot will close after confirmation."
@@ -489,13 +601,13 @@ class FrequencyPlot(QWidget):
             result = mb.exec_()
             if result == QMessageBox.Yes:
                 self.time_range_selected.emit(selected_data)
-                logging.info(f"Data confirmed for FrameIndex: {selected_data['frameIndex']}, Range: {start_frame_index} to {end_frame_index}")
+                logging.info(f"Data confirmed for FrameIndex: {selected_data['frameIndex']}, Time Range: {start_time_str} to {end_time_str}")
                 mb_done = self._create_styled_messagebox(
                     title="Selection Complete",
                     text=(
                         f"Selection confirmed.\n"
                         f"Frame Index: <b>{selected_data['frameIndex']}</b> selected.\n"
-                        f"Range: {start_frame_index} to {end_frame_index}\n\n"
+                        f"Time Range: {start_time_str} to {end_time_str}\n\n"
                         f"The frequency plot will now close."
                     ),
                     icon=QMessageBox.Information,
