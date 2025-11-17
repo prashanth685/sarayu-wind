@@ -657,3 +657,8 @@ class FrequencyPlot(QWidget):
         # Force style update
         mb.setStyle(mb.style())
         return mb
+
+
+
+
+
