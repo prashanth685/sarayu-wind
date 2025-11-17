@@ -151,7 +151,6 @@ class DashboardWindow(QWidget):
             border-radius: 5px;
             font-size: 15px;
             min-width: 80px;
-            transition: background-color 0.2s ease;
         }
         QInputDialog QPushButton:hover,
         QMessageBox QPushButton:hover {
