@@ -44,6 +44,13 @@ class FrequencyPlot(QWidget):
         self.is_dragging_range = False
         self.drag_start_x = 0
 
+        # Vertical lines for start and end bands
+        self.start_vertical_line = None
+        self.end_vertical_line = None
+        self.dragging_line = None
+        self.is_destroying = False
+        self.plot_update_pending = False
+
         self.initUI()
         self.initialize_data()
 
@@ -81,6 +88,14 @@ class FrequencyPlot(QWidget):
         self.hLine = pg.InfiniteLine(angle=0, movable=False)
         self.plot_widget.addItem(self.vLine, ignoreBounds=True)
         self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+        
+        # Add vertical lines for start and end bands
+        self.start_vertical_line = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('r', width=2, style=2))
+        self.end_vertical_line = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('g', width=2, style=2))
+        self.start_vertical_line.sigDragged.connect(self.start_line_dragged)
+        self.end_vertical_line.sigDragged.connect(self.end_line_dragged)
+        self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
+        self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
         
         # Proxy for crosshair
         self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
@@ -207,17 +222,53 @@ class FrequencyPlot(QWidget):
 
     def filter_and_plot_data(self):
         try:
-            if not self.current_records or not self.time_data:
+            if self.is_destroying or not self.current_records or not self.time_data:
                 return
+            
+            # Check if plot widget is still valid
+            if not hasattr(self, 'plot_widget') or self.plot_widget is None:
+                return
+                
+            try:
+                # Check if the scene is still valid
+                scene = self.plot_widget.scene()
+                if scene is None:
+                    return
+            except RuntimeError:
+                # Scene has been deleted
+                return
+            
+            # Use debounce timer to prevent rapid updates during destruction
+            if self.plot_update_pending:
+                return
+            
+            self.plot_update_pending = True
 
-            # Clear the plot
-            self.plot_widget.clear()
+            # Clear the plot only if widget is valid
+            if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+                try:
+                    self.plot_widget.clear()
+                except RuntimeError:
+                    # Plot widget has been deleted
+                    return
             
             # Re-add crosshair lines after clearing
-            self.vLine = pg.InfiniteLine(angle=90, movable=False)
-            self.hLine = pg.InfiniteLine(angle=0, movable=False)
-            self.plot_widget.addItem(self.vLine, ignoreBounds=True)
-            self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+            try:
+                self.vLine = pg.InfiniteLine(angle=90, movable=False)
+                self.hLine = pg.InfiniteLine(angle=0, movable=False)
+                self.plot_widget.addItem(self.vLine, ignoreBounds=True)
+                self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+                
+                # Re-add vertical lines for start and end bands
+                self.start_vertical_line = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('r', width=2, style=2))
+                self.end_vertical_line = pg.InfiniteLine(angle=90, movable=True, pen=pg.mkPen('g', width=2, style=2))
+                self.start_vertical_line.sigDragged.connect(self.start_line_dragged)
+                self.end_vertical_line.sigDragged.connect(self.end_line_dragged)
+                self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
+                self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
+            except RuntimeError:
+                # Scene was deleted during operation
+                return
 
             # Use actual timestamps for filtering
             min_time = min(self.time_data) if self.time_data else 0
@@ -240,63 +291,285 @@ class FrequencyPlot(QWidget):
                 time_array = np.array(filtered_times)
                 freq_array = np.array(filtered_frequencies)
                 
-                # Create plot item
-                self.plot_widget.plot(time_array, freq_array, 
-                                     pen=pg.mkPen('b', width=2),
-                                     symbol='o',
-                                     symbolSize=3,
-                                     symbolBrush='b',
-                                     name='Tacho Frequency')
+                try:
+                    # Create plot item without scatter symbols to prevent ScatterPlotItem deletion errors
+                    plot_item = self.plot_widget.plot(time_array, freq_array, 
+                                                 pen=pg.mkPen('b', width=2),
+                                                 symbol=None,  # Disable scatter symbols
+                                                 name='Tacho Frequency')
+                except RuntimeError as e:
+                    logging.error(f"RuntimeError during plotting: {str(e)}")
+                    return
                 
-                # Set axis labels and title
-                self.plot_widget.setLabel('left', 'Frequency', units='Hz')
-                self.plot_widget.setLabel('bottom', 'Time')
-                self.plot_widget.setTitle('Tacho Frequency vs Time', size='14pt', bold=True)
+                try:
+                    # Set axis labels and title
+                    self.plot_widget.setLabel('left', 'Frequency', units='Hz')
+                    self.plot_widget.setLabel('bottom', 'Time')
+                    self.plot_widget.setTitle('Tacho Frequency vs Time', size='14pt', bold=True)
+                    
+                    # Format x-axis to show time properly
+                    axis = self.plot_widget.getAxis('bottom')
+                    # Create string ticks from timestamps
+                    num_ticks = min(10, len(time_array))
+                    if num_ticks > 1:
+                        tick_indices = np.linspace(0, len(time_array)-1, num_ticks, dtype=int)
+                        tick_texts = [datetime.datetime.fromtimestamp(time_array[i]).strftime('%H:%M:%S') for i in tick_indices]
+                        tick_positions = time_array[tick_indices]
+                        axis.setTicks([list(zip(tick_positions, tick_texts))])
+                except RuntimeError:
+                    # Scene was deleted during axis configuration
+                    return
                 
-                # Format x-axis to show time properly
-                axis = self.plot_widget.getAxis('bottom')
-                # Create string ticks from timestamps
-                num_ticks = min(10, len(time_array))
-                if num_ticks > 1:
-                    tick_indices = np.linspace(0, len(time_array)-1, num_ticks, dtype=int)
-                    tick_texts = [datetime.datetime.fromtimestamp(time_array[i]).strftime('%H:%M:%S') for i in tick_indices]
-                    tick_positions = time_array[tick_indices]
-                    axis.setTicks([list(zip(tick_positions, tick_texts))])
+                # Update vertical line positions if they exist
+                try:
+                    if hasattr(self, 'start_vertical_line') and self.start_vertical_line is not None:
+                        self.start_vertical_line.setPos(lower_time)
+                    if hasattr(self, 'end_vertical_line') and self.end_vertical_line is not None:
+                        self.end_vertical_line.setPos(upper_time)
+                except RuntimeError:
+                    # Lines were deleted, ignore
+                    pass
                 
                 # Update time range labels
-                lower_time_str = datetime.datetime.fromtimestamp(lower_time).strftime('%H:%M:%S')
-                upper_time_str = datetime.datetime.fromtimestamp(upper_time).strftime('%H:%M:%S')
-                
-                self.start_label.setText(f"Start: {lower_time_str}")
-                self.end_label.setText(f"End: {upper_time_str}")
+                try:
+                    lower_time_str = datetime.datetime.fromtimestamp(lower_time).strftime('%H:%M:%S')
+                    upper_time_str = datetime.datetime.fromtimestamp(upper_time).strftime('%H:%M:%S')
+                    
+                    if hasattr(self, 'start_label') and self.start_label is not None:
+                        self.start_label.setText(f"Start: {lower_time_str}")
+                    if hasattr(self, 'end_label') and self.end_label is not None:
+                        self.end_label.setText(f"End: {upper_time_str}")
+                except RuntimeError:
+                    # Labels were deleted, ignore
+                    pass
             else:
-                self.start_label.setText("Start: --:--:--")
-                self.end_label.setText("End: --:--:--")
+                try:
+                    if hasattr(self, 'start_label') and self.start_label is not None:
+                        self.start_label.setText("Start: --:--:--")
+                    if hasattr(self, 'end_label') and self.end_label is not None:
+                        self.end_label.setText("End: --:--:--")
+                except RuntimeError:
+                    # Labels were deleted, ignore
+                    pass
         except Exception as e:
             logging.error(f"Error in filter_and_plot_data: {str(e)}")
             import traceback
             logging.error(traceback.format_exc())
+        finally:
+            # Reset update flag
+            self.plot_update_pending = False
 
     def update_labels(self):
         self.lower_time_percentage = self.start_slider.value()
         self.upper_time_percentage = self.end_slider.value()
-        if self.time_data:
+        
+        # Ensure start is not greater than end
+        if self.lower_time_percentage > self.upper_time_percentage:
+            if self.sender() == self.start_slider:
+                self.lower_time_percentage = self.upper_time_percentage
+                self.start_slider.setValue(self.lower_time_percentage)
+            else:
+                self.upper_time_percentage = self.lower_time_percentage
+                self.end_slider.setValue(self.upper_time_percentage)
+        
+        self.filter_and_plot_data()
+    
+    def start_line_dragged(self, line):
+        """Handle dragging of the start vertical line"""
+        try:
+            if self.is_destroying or not self.time_data:
+                return
+            
+            # Check if plot widget is still valid
+            if not hasattr(self, 'plot_widget') or self.plot_widget is None:
+                return
+            
+            # Get the current position of the line
+            pos = line.value()
+            
+            # Convert position to percentage
             min_time = min(self.time_data)
             max_time = max(self.time_data)
             time_range = max(max_time - min_time, 1)
-            lower_time = min_time + (time_range * self.lower_time_percentage / 100.0)
-            upper_time = min_time + (time_range * self.upper_time_percentage / 100.0)
             
-            # Convert timestamps to readable format
-            lower_time_str = datetime.datetime.fromtimestamp(lower_time).strftime('%H:%M:%S')
-            upper_time_str = datetime.datetime.fromtimestamp(upper_time).strftime('%H:%M:%S')
+            if pos < min_time:
+                pos = min_time
+            elif pos > max_time:
+                pos = max_time
             
-            self.start_label.setText(f"Start: {lower_time_str}")
-            self.end_label.setText(f"End: {upper_time_str}")
-        else:
-            self.start_label.setText("Start: --:--:--")
-            self.end_label.setText("End: --:--:--")
-        self.debounce_timer.start(self.debounce_delay)
+            percentage = ((pos - min_time) / time_range) * 100
+            
+            # Update slider and percentage
+            self.lower_time_percentage = percentage
+            if hasattr(self, 'start_slider') and self.start_slider is not None:
+                self.start_slider.setValue(int(percentage))
+            
+            # Ensure start is not greater than end
+            if self.lower_time_percentage > self.upper_time_percentage:
+                self.upper_time_percentage = self.lower_time_percentage
+                if hasattr(self, 'end_slider') and self.end_slider is not None:
+                    self.end_slider.setValue(int(self.upper_time_percentage))
+            
+            self.filter_and_plot_data()
+        except Exception as e:
+            logging.error(f"Error in start_line_dragged: {str(e)}")
+    
+    def end_line_dragged(self, line):
+        """Handle dragging of the end vertical line"""
+        try:
+            if self.is_destroying or not self.time_data:
+                return
+            
+            # Check if plot widget is still valid
+            if not hasattr(self, 'plot_widget') or self.plot_widget is None:
+                return
+            
+            # Get the current position of the line
+            pos = line.value()
+            
+            # Convert position to percentage
+            min_time = min(self.time_data)
+            max_time = max(self.time_data)
+            time_range = max(max_time - min_time, 1)
+            
+            if pos < min_time:
+                pos = min_time
+            elif pos > max_time:
+                pos = max_time
+            
+            percentage = ((pos - min_time) / time_range) * 100
+            
+            # Update slider and percentage
+            self.upper_time_percentage = percentage
+            if hasattr(self, 'end_slider') and self.end_slider is not None:
+                self.end_slider.setValue(int(percentage))
+            
+            # Ensure end is not less than start
+            if self.upper_time_percentage < self.lower_time_percentage:
+                self.lower_time_percentage = self.upper_time_percentage
+                if hasattr(self, 'start_slider') and self.start_slider is not None:
+                    self.start_slider.setValue(int(self.lower_time_percentage))
+            
+            self.filter_and_plot_data()
+        except Exception as e:
+            logging.error(f"Error in end_line_dragged: {str(e)}")
+
+    def load_selected_frame(self, payload: dict):
+        """Restore previously selected frame index when the same file is re-opened"""
+        try:
+            if not payload:
+                return
+            
+            # Check if this is the same file and model
+            payload_filename = payload.get('filename')
+            payload_model = payload.get('model') or payload.get('moduleName')
+            payload_frame_index = payload.get('frameIndex')
+            
+            if not payload_filename or not payload_model or payload_frame_index is None:
+                return
+            
+            # Only restore if this is the same file and model
+            if (payload_filename == self.filename and 
+                payload_model == self.model_name and 
+                self.current_records):
+                
+                # Find the record with the selected frame index
+                selected_record = None
+                for record in self.current_records:
+                    if record.get("frameIndex") == payload_frame_index:
+                        selected_record = record
+                        break
+                
+                if selected_record:
+                    self.selected_record = selected_record
+                    
+                    # Calculate the position for the selected frame index
+                    all_frame_indices = [r.get("frameIndex", 0) for r in self.current_records]
+                    min_frame = min(all_frame_indices)
+                    max_frame = max(all_frame_indices)
+                    frame_range = max_frame - min_frame
+                    
+                    if frame_range > 0:
+                        # Calculate the percentage position of the selected frame
+                        frame_position = (payload_frame_index - min_frame) / frame_range * 100
+                        
+                        # Set the sliders to center around the selected frame (±5% range)
+                        center_percentage = max(5, min(95, frame_position))
+                        range_width = 5  # 5% on each side
+                        
+                        self.lower_time_percentage = max(0, center_percentage - range_width)
+                        self.upper_time_percentage = min(100, center_percentage + range_width)
+                        
+                        # Update slider values
+                        if hasattr(self, 'start_slider') and self.start_slider is not None:
+                            self.start_slider.setValue(int(self.lower_time_percentage))
+                        if hasattr(self, 'end_slider') and self.end_slider is not None:
+                            self.end_slider.setValue(int(self.upper_time_percentage))
+                        
+                        # Update the plot with the restored selection
+                        self.filter_and_plot_data()
+                        
+                        # Lock the crosshair at the selected frame's timestamp
+                        timestamp = self.parse_time(selected_record.get("createdAt"))
+                        if timestamp is None:
+                            timestamp = selected_record.get("frameIndex", 0)
+                        else:
+                            timestamp = timestamp.timestamp()
+                        
+                        self.locked_crosshair_position = timestamp
+                        self.is_crosshair_visible = True
+                        self.is_crosshair_locked = True
+                        
+                        # Update crosshair position
+                        if hasattr(self, 'plot_widget') and self.plot_widget is not None:
+                            try:
+                                self.vLine.setPos(timestamp)
+                                self.hLine.setPos(None)  # Clear horizontal line
+                            except RuntimeError:
+                                pass
+                        
+                        logging.info(f"FrequencyPlot: Restored frame index {payload_frame_index} for {self.filename}")
+        except Exception as e:
+            logging.error(f"Error loading selected frame in FrequencyPlot: {str(e)}")
+
+    def closeEvent(self, event):
+        """Handle widget close event to prevent RuntimeError"""
+        self.is_destroying = True
+        self.plot_update_pending = True  # Prevent further updates
+        
+        # Stop debounce timer
+        if hasattr(self, 'debounce_timer') and self.debounce_timer is not None:
+            try:
+                self.debounce_timer.stop()
+            except:
+                pass
+        
+        # Disconnect signals to prevent callbacks during destruction
+        if hasattr(self, 'start_vertical_line') and self.start_vertical_line is not None:
+            try:
+                self.start_vertical_line.sigDragged.disconnect()
+            except:
+                pass
+        
+        if hasattr(self, 'end_vertical_line') and self.end_vertical_line is not None:
+            try:
+                self.end_vertical_line.sigDragged.disconnect()
+            except:
+                pass
+        
+        if hasattr(self, 'start_slider') and self.start_slider is not None:
+            try:
+                self.start_slider.valueChanged.disconnect()
+            except:
+                pass
+        
+        if hasattr(self, 'end_slider') and self.end_slider is not None:
+            try:
+                self.end_slider.valueChanged.disconnect()
+            except:
+                pass
+        
+        super().closeEvent(event)
 
     def mouseMoved(self, evt):
         """Handle mouse movement for crosshair"""

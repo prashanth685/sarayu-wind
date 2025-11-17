@@ -1306,6 +1306,16 @@ class DashboardWindow(QWidget):
                     sub_window.showMaximized()
                 except Exception:
                     pass
+                
+                # Apply selected frame if available for this model
+                payload = self.last_selection_payload_by_model.get(file_data["model_name"])
+                if payload and hasattr(freq_plot, "load_selected_frame"):
+                    try:
+                        freq_plot.load_selected_frame(payload)
+                        self.console.append_to_console(f"FrequencyPlot: loaded frame {payload.get('frameIndex')} from {payload.get('filename')}")
+                    except Exception as e:
+                        logging.error(f"Error applying selected frame to FrequencyPlot: {e}")
+                
                 self.main_section.arrange_layout()
                 logging.debug(f"Opened FrequencyPlot for {file_data}")
                 self.console.append_to_console(f"Opened FrequencyPlot for {file_data['filename']} (model: {file_data['model_name']})")
