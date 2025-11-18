@@ -68,10 +68,14 @@ class FrequencyPlot(QWidget):
         self.layout.addWidget(self.plot_widget, stretch=1)
 
         # Crosshair
-        self.vLine = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('#333333', width=1))
-        self.hLine = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#333333', width=1))
+        self.vLine = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen('#333333', width=1, style=Qt.DotLine))
+        self.hLine = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#333333', width=1, style=Qt.DotLine))
         self.plot_widget.addItem(self.vLine, ignoreBounds=True)
         self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+        
+        # Center dot at crosshair intersection
+        self.center_dot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('red'), pen=pg.mkPen('darkred', width=2))
+        self.plot_widget.addItem(self.center_dot, ignoreBounds=True)
 
         # Red & Green Movable Selection Lines
         self.start_vertical_line = pg.InfiniteLine(angle=90, movable=True,
@@ -235,6 +239,7 @@ class FrequencyPlot(QWidget):
         self.plot_widget.clear()
         self.plot_widget.addItem(self.vLine, ignoreBounds=True)
         self.plot_widget.addItem(self.hLine, ignoreBounds=True)
+        self.plot_widget.addItem(self.center_dot, ignoreBounds=True)
         self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
 
@@ -249,6 +254,9 @@ class FrequencyPlot(QWidget):
                 idx = np.linspace(0, len(t_arr)-1, n, dtype=int)
                 labels = [datetime.datetime.fromtimestamp(t).strftime('%H:%M:%S') for t in t_arr[idx]]
                 axis.setTicks([list(zip(t_arr[idx], labels))])
+            
+            # Set default cursor position to center of plot
+            self.set_cursor_to_center()
 
     def update_selection_lines(self):
         if not self.time_data:
@@ -322,18 +330,39 @@ class FrequencyPlot(QWidget):
         pos = evt[0]
         if self.plot_widget.plotItem.vb.sceneBoundingRect().contains(pos):
             mp = self.plot_widget.plotItem.vb.mapSceneToView(pos)
-            self.vLine.setPos(mp.x())
-            self.hLine.setPos(mp.y())
+            
+            # Snap cursor to nearest frequency data point
+            if self.time_data and self.frequency_data:
+                closest_x, closest_y = self.snap_to_nearest_data_point(mp.x(), mp.y())
+                self.vLine.setPos(closest_x)
+                self.hLine.setPos(closest_y)
+                # Update center dot position
+                self.center_dot.setData([closest_x], [closest_y])
+            else:
+                self.vLine.setPos(mp.x())
+                self.hLine.setPos(mp.y())
+                self.center_dot.setData([mp.x()], [mp.y()])
 
     def mouseClicked(self, evt):
         if not evt: return
         pos = evt.scenePos()
         if self.plot_widget.plotItem.vb.sceneBoundingRect().contains(pos):
             mp = self.plot_widget.plotItem.vb.mapSceneToView(pos)
-            self.locked_crosshair_position = mp.x()
-            self.is_crosshair_locked = True
-            self.vLine.setPos(mp.x())
-            self.hLine.setPos(mp.y())
+            
+            # Snap to nearest data point when clicking
+            if self.time_data and self.frequency_data:
+                closest_x, closest_y = self.snap_to_nearest_data_point(mp.x(), mp.y())
+                self.locked_crosshair_position = closest_x
+                self.is_crosshair_locked = True
+                self.vLine.setPos(closest_x)
+                self.hLine.setPos(closest_y)
+                self.center_dot.setData([closest_x], [closest_y])
+            else:
+                self.locked_crosshair_position = mp.x()
+                self.is_crosshair_locked = True
+                self.vLine.setPos(mp.x())
+                self.hLine.setPos(mp.y())
+                self.center_dot.setData([mp.x()], [mp.y()])
 
     def select_button_click(self):
         if not self.is_crosshair_locked:
@@ -471,3 +500,37 @@ class FrequencyPlot(QWidget):
         except:
             pass
         super().closeEvent(event)
+
+    def snap_to_nearest_data_point(self, mouse_x, mouse_y):
+        """Snap cursor position to the nearest frequency data point"""
+        if not self.time_data or not self.frequency_data:
+            return mouse_x, mouse_y
+        
+        time_array = np.array(self.time_data)
+        freq_array = np.array(self.frequency_data)
+        
+        # Find the nearest time index
+        time_idx = np.argmin(np.abs(time_array - mouse_x))
+        
+        # Return the actual data point coordinates
+        return time_array[time_idx], freq_array[time_idx]
+    
+    def set_cursor_to_center(self):
+        """Set cursor position to center of the plot"""
+        if not self.time_data or not self.frequency_data:
+            return
+        
+        min_time = min(self.time_data)
+        max_time = max(self.time_data)
+        min_freq = min(self.frequency_data)
+        max_freq = max(self.frequency_data)
+        
+        center_time = (min_time + max_time) / 2
+        center_freq = (min_freq + max_freq) / 2
+        
+        # Snap to nearest data point near center
+        closest_x, closest_y = self.snap_to_nearest_data_point(center_time, center_freq)
+        
+        self.vLine.setPos(closest_x)
+        self.hLine.setPos(closest_y)
+        self.center_dot.setData([closest_x], [closest_y])
