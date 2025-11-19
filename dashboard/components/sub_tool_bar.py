@@ -305,11 +305,13 @@ class SubToolBar(QWidget):
                 self.start_blinking()
             else:
                 self.stop_blinking()
+                # Refresh dropdowns when saving stops (new data might be available)
+                if hasattr(self, 'files_dropdown') and hasattr(self, 'models_dropdown'):
+                    QTimer.singleShot(1000, self.refresh_dropdowns)
             self.update_subtoolbar()
             logging.debug(f"SubToolBar: Updated saving state to {is_saving}")
         else:
             logging.debug(f"SubToolBar: Saving state unchanged (is_saving={is_saving})")
-        self.refresh_filename()
 
     def update_mqtt_status(self, connected):
         self.mqtt_connected = connected
@@ -322,6 +324,9 @@ class SubToolBar(QWidget):
         self.refresh_filename()
         self.schedule_files_combo_update()
         self.update_subtoolbar()
+        # Refresh dropdowns when project changes
+        if hasattr(self, 'files_dropdown') and hasattr(self, 'models_dropdown'):
+            self.refresh_dropdowns()
         logging.debug(f"SubToolBar: Updated project to {project_name}")
 
     def schedule_files_combo_update(self):
@@ -410,41 +415,133 @@ class SubToolBar(QWidget):
         add_action("⏸", "#ffffff", self.stop_saving_triggered, "Stop Saving Data", self.is_saving, "#d8291d")
         self.toolbar.addSeparator()
 
-        connect_enabled = not self.mqtt_connected
-        disconnect_enabled = self.mqtt_connected
-        connect_bg = "#43a047" if connect_enabled else "#546e7a"
-        disconnect_bg = "#ef5350" if disconnect_enabled else "#546e7a"
-        add_action("🔗", "#ffffff", self.connect_mqtt_triggered, "Connect to MQTT", connect_enabled, connect_bg)
-        add_action("🔌", "#ffffff", self.disconnect_mqtt_triggered, "Disconnect from MQTT", disconnect_enabled, disconnect_bg)
-        self.toolbar.addSeparator()
+        # Add saved files dropdown
+        self.files_dropdown = QComboBox()
+        self.files_dropdown.setToolTip("Select Saved File")
+        self.files_dropdown.setMinimumWidth(150)
+        self.files_dropdown.setMinimumHeight(30)
+        self.files_dropdown.setStyleSheet("""
+            QComboBox {
+                color: #ffffff;
+                background-color: #546e7a;
+                border: 1px solid #37474f;
+                border-radius: 5px;
+                padding: 8px;
+                font-size: 14px;
+                min-height: 30px;
+            }
+            QComboBox:hover {
+                background-color: #607d8b;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 25px;
+                min-height: 30px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #ffffff;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                color: #000000;
+                background-color: #ffffff;
+                selection-background-color: #4a90e2;
+                min-height: 150px;
+            }
+        """)
+        self.toolbar.addWidget(self.files_dropdown)
 
-        self.open_action = QAction("saved files", self)
-        self.open_action.setToolTip("Open File")
-        self.open_action.triggered.connect(self.open_selected_file)
-        self.open_action.setEnabled(not self.mqtt_connected and self.current_project is not None)
-        self.toolbar.addAction(self.open_action)
-        open_button = self.toolbar.widgetForAction(self.open_action)
-        if open_button:
-            open_button.setStyleSheet(f"""
+        # Add models dropdown
+        self.models_dropdown = QComboBox()
+        self.models_dropdown.setToolTip("Select Model")
+        self.models_dropdown.setMinimumWidth(150)
+        self.models_dropdown.setMinimumHeight(30)
+        self.models_dropdown.setStyleSheet("""
+            QComboBox {
+                color: #ffffff;
+                background-color: #546e7a;
+                border: 1px solid #37474f;
+                border-radius: 5px;
+                padding: 8px;
+                font-size: 14px;
+                min-height: 30px;
+            }
+            QComboBox:hover {
+                background-color: #607d8b;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 25px;
+                min-height: 30px;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 5px solid #ffffff;
+                margin-right: 8px;
+            }
+            QComboBox QAbstractItemView {
+                color: #000000;
+                background-color: #ffffff;
+                selection-background-color: #4a90e2;
+                min-height: 150px;
+            }
+        """)
+        self.toolbar.addWidget(self.models_dropdown)
+
+        # Add open button
+        self.open_dropdown_action = QAction("open", self)
+        self.open_dropdown_action.setToolTip("Open Frequency Plot")
+        self.open_dropdown_action.triggered.connect(self.open_frequency_plot)
+        self.open_dropdown_action.setEnabled(self.current_project is not None)
+        self.toolbar.addAction(self.open_dropdown_action)
+        open_dropdown_button = self.toolbar.widgetForAction(self.open_dropdown_action)
+        if open_dropdown_button:
+            open_dropdown_button.setStyleSheet(f"""
                 QToolButton {{
                     color: #ffffff;
-                    font-size: 20px;
+                    font-size: 25px;
                     border: none;
                     padding: 6px;
                     border-radius: 5px;
-                    background-color: {'#43a047' if self.open_action.isEnabled() else '#546e7a'};
+                    background-color: {'#43a047' if self.open_dropdown_action.isEnabled() else '#546e7a'};
                 }}
                 QToolButton:hover {{ background-color: #4a90e2; }}
                 QToolButton:pressed {{ background-color: #357abd; }}
                 QToolButton:disabled {{ background-color: #546e7a; color: #b0bec5; }}
             """)
 
-        self.toolbar.addSeparator()
+        # Populate dropdowns
+        self.refresh_dropdowns()
 
+        # Keep the old open action for compatibility (but hidden)
+        self.open_action = QAction("saved files", self)
+        self.open_action.setToolTip("Open File")
+        self.open_action.triggered.connect(self.open_selected_file)
+        self.open_action.setEnabled(False)  # Disable the old one
+        self.open_action.setVisible(False)  # Hide the old one
+        self.toolbar.addAction(self.open_action)
+
+        # Add spacer to push MQTT buttons to the right
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.toolbar.addWidget(spacer)
 
+        # Add MQTT buttons before layout button
+        self.toolbar.addSeparator()
+        
+        connect_enabled = not self.mqtt_connected
+        disconnect_enabled = self.mqtt_connected
+        connect_bg = "#43a047" if connect_enabled else "#546e7a"
+        disconnect_bg = "#ef5350" if disconnect_enabled else "#546e7a"
+        add_action("🔗", "#ffffff", self.connect_mqtt_triggered, "Connect to MQTT", connect_enabled, connect_bg)
+        add_action("🔌", "#ffffff", self.disconnect_mqtt_triggered, "Disconnect from MQTT", disconnect_enabled, disconnect_bg)
+
+        # Layout button at the right end
         layout_action = QAction("🖼️", self)
         layout_action.setToolTip("Select Layout")
         layout_action.triggered.connect(self.show_layout_menu)
@@ -462,7 +559,110 @@ class SubToolBar(QWidget):
                 QToolButton:hover { background-color: #4a90e2; }
                 QToolButton:pressed { background-color: #357abd; }
             """)
+        
         self.toolbar.repaint()
+
+    def refresh_dropdowns(self):
+        """Refresh the dropdowns with current project data"""
+        try:
+            # Clear current items
+            self.files_dropdown.clear()
+            self.models_dropdown.clear()
+            
+            if not self.current_project:
+                self.files_dropdown.addItem("No project selected")
+                self.models_dropdown.addItem("No project selected")
+                self.open_dropdown_action.setEnabled(False)
+                return
+            
+            # Get models for the current project
+            project_data = self.parent.db.get_project_data(self.current_project)
+            if project_data and "models" in project_data:
+                models = [model["name"] for model in project_data["models"]]
+                self.models_dropdown.addItems(models)
+                
+                # Enable/disable based on availability
+                if models:
+                    self.models_dropdown.setEnabled(True)
+                    # Load files for the first model
+                    self.refresh_files_for_model(models[0])
+                else:
+                    self.models_dropdown.addItem("No models found")
+                    self.models_dropdown.setEnabled(False)
+                    self.files_dropdown.addItem("No models found")
+                    self.open_dropdown_action.setEnabled(False)
+            else:
+                self.models_dropdown.addItem("No models found")
+                self.models_dropdown.setEnabled(False)
+                self.files_dropdown.addItem("No models found")
+                self.open_dropdown_action.setEnabled(False)
+            
+            # Connect model selection change to refresh files
+            self.models_dropdown.currentTextChanged.connect(self.refresh_files_for_model)
+            
+        except Exception as e:
+            logging.error(f"Error refreshing dropdowns: {str(e)}")
+            self.files_dropdown.addItem("Error loading data")
+            self.models_dropdown.addItem("Error loading data")
+            self.open_dropdown_action.setEnabled(False)
+
+    def refresh_files_for_model(self, model_name):
+        """Refresh files dropdown based on selected model"""
+        try:
+            self.files_dropdown.clear()
+            
+            if not model_name or model_name == "No models found" or not self.current_project:
+                self.files_dropdown.addItem("No model selected")
+                self.open_dropdown_action.setEnabled(False)
+                return
+            
+            # Get files for the selected model
+            filenames = self.parent.db.get_distinct_filenames(self.current_project, model_name)
+            
+            if filenames:
+                self.files_dropdown.addItems(filenames)
+                self.open_dropdown_action.setEnabled(True)
+            else:
+                self.files_dropdown.addItem("No files found")
+                self.open_dropdown_action.setEnabled(False)
+                
+        except Exception as e:
+            logging.error(f"Error refreshing files for model {model_name}: {str(e)}")
+            self.files_dropdown.addItem("Error loading files")
+            self.open_dropdown_action.setEnabled(False)
+
+    def open_frequency_plot(self):
+        """Open frequency plot with selected file and model"""
+        try:
+            selected_file = self.files_dropdown.currentText()
+            selected_model = self.models_dropdown.currentText()
+            
+            if not self.current_project:
+                QMessageBox.warning(self, "Error", "No project selected!")
+                return
+            
+            if not selected_model or selected_model in ["No models found", "No model selected"]:
+                QMessageBox.warning(self, "Error", "Please select a model!")
+                return
+            
+            if not selected_file or selected_file in ["No files found", "No model selected", "Error loading files"]:
+                QMessageBox.warning(self, "Error", "Please select a valid file!")
+                return
+            
+            # Create file data dict similar to the original open_selected_file
+            file_data = {
+                "project_name": self.current_project,
+                "model_name": selected_model,
+                "filename": selected_file
+            }
+            
+            # Emit the signal to open the frequency plot
+            self.open_file_triggered.emit(file_data)
+            logging.debug(f"SubToolBar: Open frequency plot triggered for {file_data}")
+            
+        except Exception as e:
+            logging.error(f"Error opening frequency plot: {str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to open frequency plot: {str(e)}")
 
     def open_selected_file(self):
         # Show file selection dialog

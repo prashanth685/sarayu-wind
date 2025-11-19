@@ -59,7 +59,7 @@ class MainSection(QWidget):
         self.scroll_area.hide()
         logging.debug(f"Set widget in MainSection: {type(widget).__name__}")
 
-    def add_subwindow(self, widget, feature_name,project_name=None, channel_name=None, model_name=None):
+    def add_subwindow(self, widget, feature_name,project_name=None, channel_name=None, model_name=None, frame_index=None):
         try:
             subwindow = QMdiSubWindow()
             subwindow.setWidget(widget)
@@ -68,6 +68,9 @@ class MainSection(QWidget):
             # Ensure project_name is always resolved: fall back to parent's current project if not provided
             resolved_project = project_name or getattr(self.parent, 'current_project', None) or ''
             title = f"{resolved_project} - {feature_name}".strip(" - ")
+            # Add frame index to title if available
+            if frame_index is not None:
+                title += f" - Frame {frame_index}"
             subwindow.setWindowTitle(title)
             self.mdi_area.addSubWindow(subwindow)
             subwindow.showNormal()

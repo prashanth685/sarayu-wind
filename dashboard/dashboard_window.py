@@ -90,6 +90,7 @@ class DashboardWindow(QWidget):
         self.project_structure_widget = None
         self.saving_filenames = {}
         self.last_selection_payload_by_model = {}
+        self.current_session_frame_selections = {}  # Track only current session frame selections
         self._freqplot_key = None
         self.selected_channel = None  # Store the currently selected channel from TreeView
         # Debounce maps to collapse rapid updates per feature instance
@@ -177,7 +178,7 @@ class DashboardWindow(QWidget):
         self.setLayout(main_layout)
 
         self.file_bar = FileBar(self)
-        self.file_bar.home_triggered.connect(self.display_dashboard)
+        self.file_bar.home_triggered.connect(self.display_dashboard_with_select_project)
         self.file_bar.open_triggered.connect(self.open_project)
         self.file_bar.edit_triggered.connect(self.edit_project_dialog)
         self.file_bar.new_triggered.connect(self.create_project)
@@ -410,10 +411,10 @@ class DashboardWindow(QWidget):
         self.worker.finished.connect(self.thread.quit)
         self.worker.finished.connect(self.worker.deleteLater)
         self.thread.finished.connect(self.thread.deleteLater)
-        self.worker.select_project.connect(self.display_select_project)
+        self.worker.select_project.connect(self.display_dashboard_with_select_project)
         self.thread.start()
 
-    def display_dashboard(self):
+    def display_dashboard_with_select_project(self):
         self.clear_content_layout()
         self.tree_view.setVisible(False)
         self.sub_tool_bar.setVisible(False)
@@ -423,6 +424,8 @@ class DashboardWindow(QWidget):
         self.file_bar.update_state(project_name=None)
         self.project_changed.emit(None)
         self.setWindowTitle('Sarayu Desktop Application')
+        self.last_selection_payload_by_model = {}
+        self.current_session_frame_selections = {}  # Clear current session selections
         self.select_project_widget = SelectProjectWidget(self)
         self.main_section.set_widget(self.select_project_widget)
         logging.debug("Displayed dashboard with SelectProjectWidget in MainSection")
@@ -437,6 +440,8 @@ class DashboardWindow(QWidget):
         self.file_bar.update_state(project_name=None)
         self.project_changed.emit(None)
         self.setWindowTitle('Sarayu Desktop Application')
+        self.last_selection_payload_by_model = {}
+        self.current_session_frame_selections = {}  # Clear current session selections
         self.select_project_widget = SelectProjectWidget(self)
         self.main_section.set_widget(self.select_project_widget)
         logging.debug("Displayed SelectProjectWidget in MainSection")
@@ -594,7 +599,12 @@ class DashboardWindow(QWidget):
                 self.mqtt_handler.add_active_feature(feature_name, model_name, ch)
             widget = instance.get_widget()
             if widget:
-                sw = self.main_section.add_subwindow(widget, feature_name, channel_name=ch, model_name=model_name)
+                # Extract frame index from selected payload if available (only from current session)
+                frame_index = None
+                if model_name in self.current_session_frame_selections:
+                    frame_index = self.current_session_frame_selections.get(model_name)
+                
+                sw = self.main_section.add_subwindow(widget, feature_name, channel_name=ch, model_name=model_name, frame_index=frame_index)
                 if sw:
                     self.sub_windows[key] = sw
                     sw.closeEvent = lambda event, k=key: self.on_subwindow_closed(event, k)
@@ -632,6 +642,7 @@ class DashboardWindow(QWidget):
         # Reset any stale selections/state so updates apply globally
         self.selected_channel = None
         self.last_selection_payload_by_model = {}
+        self.current_session_frame_selections = {}  # Clear current session selections
         project_data = self.db.get_project_data(project_name)
         if not project_data:
             self.console.append_to_console(f"Error: Project {project_name} not found.")
@@ -1083,10 +1094,63 @@ class DashboardWindow(QWidget):
             self.main_splitter.setSizes([tree_view_width, right_container_width])
         self.main_section.arrange_layout()
 
+    def remove_saved_file_plots(self):
+        """Remove all FrequencyPlot (saved file) windows"""
+        try:
+            # Find and close all FrequencyPlot windows
+            freq_plot_keys = [key for key in self.sub_windows.keys() if key[0] == "Frequency Plot"]
+            for key in freq_plot_keys:
+                try:
+                    sub_window = self.sub_windows.get(key)
+                    if sub_window:
+                        sub_window.close()
+                    del self.sub_windows[key]
+                    logging.debug(f"Closed FrequencyPlot window: {key}")
+                except Exception as e:
+                    logging.error(f"Error closing FrequencyPlot window {key}: {e}")
+            
+            # Clear the freqplot key
+            self._freqplot_key = None
+            
+            # Arrange layout after removing windows
+            self.main_section.arrange_layout()
+            
+            if freq_plot_keys:
+                self.console.append_to_console(f"Removed {len(freq_plot_keys)} saved file plot(s)")
+                logging.info(f"Removed {len(freq_plot_keys)} FrequencyPlot windows")
+        except Exception as e:
+            logging.error(f"Error removing saved file plots: {e}")
+            self.console.append_to_console(f"Error removing saved file plots: {str(e)}")
+    
+    def update_window_titles_remove_frame_index(self):
+        """Update window titles to remove frame index"""
+        try:
+            for key, sub_window in self.sub_windows.items():
+                if sub_window:
+                    # Get current title
+                    title = sub_window.windowTitle()
+                    # Remove frame index part if present
+                    if " - Frame " in title:
+                        new_title = title.split(" - Frame ")[0]
+                        sub_window.setWindowTitle(new_title)
+                        logging.debug(f"Updated window title: {title} -> {new_title}")
+        except Exception as e:
+            logging.error(f"Error updating window titles: {e}")
+
     def connect_mqtt(self):
         if self.mqtt_connected:
             self.console.append_to_console("Already connected to MQTT")
             return
+        
+        # Remove saved file plots and clear frame index when connecting to MQTT
+        self.remove_saved_file_plots()
+        
+        # Update window titles to remove frame index
+        self.update_window_titles_remove_frame_index()
+        
+        # Clear current session frame selections
+        self.current_session_frame_selections = {}
+        
         QTimer.singleShot(0, self.setup_mqtt)
 
     def disconnect_mqtt(self):
@@ -1225,11 +1289,17 @@ class DashboardWindow(QWidget):
                         self.mqtt_handler.add_active_feature(feature_name, selected_model, channel)
                     widget = feature_instance.get_widget()
                     if widget:
+                        # Extract frame index from selected payload if available (only from current session)
+                        frame_index = None
+                        if selected_model in self.current_session_frame_selections:
+                            frame_index = self.current_session_frame_selections.get(selected_model)
+                        
                         sub_window = self.main_section.add_subwindow(
                             widget,
                             feature_name,
                             channel_name=channel,
-                            model_name=selected_model
+                            model_name=selected_model,
+                            frame_index=frame_index
                         )
                         if sub_window:
                             self.sub_windows[key] = sub_window
@@ -1290,11 +1360,17 @@ class DashboardWindow(QWidget):
             )
             freq_plot.time_range_selected.connect(self.on_frequency_selection)
 
+            # Extract frame index from selected payload if available (only from current session)
+            frame_index = None
+            if file_data["model_name"] in self.current_session_frame_selections:
+                frame_index = self.current_session_frame_selections.get(file_data["model_name"])
+
             sub_window = self.main_section.add_subwindow(
                 freq_plot,
                 "Frequency Plot",
                 model_name=file_data["model_name"],
-                channel_name=file_data["filename"]
+                channel_name=file_data["filename"],
+                frame_index=frame_index
             )
             if sub_window:
                 self._freqplot_key = ("Frequency Plot", file_data["model_name"], file_data["filename"], id(freq_plot))
@@ -1352,6 +1428,7 @@ class DashboardWindow(QWidget):
                 normalized["samplingSize"] = normalized.get("N")
 
             self.last_selection_payload_by_model[model_name] = normalized
+            self.current_session_frame_selections[model_name] = normalized.get("frameIndex")
             self.console.append_to_console(
                 f"Selected frame {normalized.get('frameIndex')} from {normalized.get('filename')} "
                 f"stored for model {model_name}. Now choose a feature to view."
