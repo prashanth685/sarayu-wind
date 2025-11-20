@@ -63,7 +63,7 @@ class FrequencyPlot(QWidget):
         self.plot_widget.showGrid(x=True, y=True, alpha=0.3)
         self.plot_widget.setLabel('left', 'Frequency', units='Hz')
         self.plot_widget.setLabel('bottom', 'Time')
-        self.plot_widget.setTitle('Tacho Frequency vs Time', size='14pt', bold=True)
+        self.plot_widget.setTitle('', size='14pt', bold=True)
         self.plot_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.layout.addWidget(self.plot_widget, stretch=1)
 

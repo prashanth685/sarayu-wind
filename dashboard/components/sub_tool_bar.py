@@ -3,13 +3,14 @@ from PyQt5.QtWidgets import (
     QLabel, QDialog, QVBoxLayout, QPushButton, QGridLayout, QComboBox, 
     QListWidget, QMessageBox
 )
-from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QSize, Qt, QTimer, pyqtSignal, QThread
 from PyQt5.QtWidgets import QListWidgetItem
 
 from PyQt5.QtGui import QIcon
 import logging
 import re
 import time
+from datetime import datetime
 
 class LayoutSelectionDialog(QDialog):
     def __init__(self, parent=None, current_layout=None):
@@ -387,8 +388,6 @@ class SubToolBar(QWidget):
         else:
             self.stop_blinking()
 
-        self.toolbar.addSeparator()
-
         def add_action(text_icon, color, callback, tooltip, enabled, background_color):
             action = QAction(text_icon, self)
             action.triggered.connect(callback)
@@ -618,9 +617,15 @@ class SubToolBar(QWidget):
             
             # Get files for the selected model
             filenames = self.parent.db.get_distinct_filenames(self.current_project, model_name)
-            
+
             if filenames:
-                self.files_dropdown.addItems(filenames)
+                # Show human-friendly labels: "dataN start ... -- stop ..." but keep raw filename as item data
+                for fname in filenames:
+                    label = self._format_saved_file_label(fname, model_name)
+                    index = self.files_dropdown.count()
+                    self.files_dropdown.addItem(label)
+                    # Store the raw filename so we can open the file without the extra text
+                    self.files_dropdown.setItemData(index, fname)
                 self.open_dropdown_action.setEnabled(True)
             else:
                 self.files_dropdown.addItem("No files found")
@@ -631,10 +636,68 @@ class SubToolBar(QWidget):
             self.files_dropdown.addItem("Error loading files")
             self.open_dropdown_action.setEnabled(False)
 
+    def _format_saved_file_label(self, filename, model_name):
+        """Return a display label like
+        "data1 start 10-01-2025 12:07:01 -- stop 10-01-2025 12:08:02"
+        for the given filename, if timestamps are available.
+        """
+        try:
+            if not self.current_project or not getattr(self.parent, "db", None):
+                return filename
+
+            # Query only first and last message to avoid loading large datasets
+            col = self.parent.db.history_collection
+            base_query = {
+                "projectName": self.current_project,
+                "email": self.parent.email,
+                "moduleName": model_name,
+                "filename": filename,
+            }
+            start_doc = col.find(base_query, {"createdAt": 1}).sort("createdAt", 1).limit(1)
+            stop_doc = col.find(base_query, {"createdAt": 1}).sort("createdAt", -1).limit(1)
+            start_ts = None
+            stop_ts = None
+            try:
+                start_ts = next(start_doc, {}).get("createdAt")
+            except Exception:
+                pass
+            try:
+                stop_ts = next(stop_doc, {}).get("createdAt")
+            except Exception:
+                pass
+            if not start_ts and not stop_ts:
+                return filename
+
+            def _fmt(ts_val):
+                if isinstance(ts_val, datetime):
+                    dt = ts_val
+                elif isinstance(ts_val, str):
+                    # Try common ISO formats; fall back to raw string on failure
+                    try:
+                        # Handle trailing Z (UTC) if present
+                        cleaned = ts_val.replace("Z", "+00:00")
+                        dt = datetime.fromisoformat(cleaned)
+                    except Exception:
+                        return str(ts_val)
+                else:
+                    return str(ts_val)
+                return dt.strftime("%d-%m-%Y %H:%M:%S")
+
+            start_str = _fmt(start_ts)
+            stop_str = _fmt(stop_ts)
+
+            return f"{filename} start {start_str} -- stop {stop_str}"
+        except Exception as e:
+            logging.error(f"SubToolBar: Error formatting label for {filename}: {e}")
+            return filename
+
     def open_frequency_plot(self):
         """Open frequency plot with selected file and model"""
         try:
-            selected_file = self.files_dropdown.currentText()
+            # Use the raw filename stored as item data, fall back to text if missing
+            selected_file = self.files_dropdown.currentData()
+            if not selected_file:
+                selected_file = self.files_dropdown.currentText()
             selected_model = self.models_dropdown.currentText()
             
             if not self.current_project:
@@ -717,17 +780,22 @@ class SubToolBar(QWidget):
                 model_name = self.parent.tree_view.get_selected_model()
                 if model_name:
                     filenames = self.parent.db.get_distinct_filenames(self.current_project, model_name)
-                    if filenames:
-                        # Extract numbers from filenames and find the next available number
-                        numbers = []
-                        for f in filenames:
-                            match = re.match(r"data(\d+)", f)
-                            if match:
-                                numbers.append(int(match.group(1)))
-                        filename_counter = max(numbers, default=0) + 1
-                    next_filename = f"data{filename_counter}"
                 else:
-                    logging.debug("SubToolBar: No model selected for filename refresh")
+                    # Fall back to all files in the project so numbering continues even without a model selection
+                    filenames = self.parent.db.get_distinct_filenames(self.current_project)
+
+                if filenames:
+                    # Extract numbers from filenames and find the next available number
+                    numbers = []
+                    for f in filenames:
+                        match = re.match(r"data(\d+)", f)
+                        if match:
+                            numbers.append(int(match.group(1)))
+                    filename_counter = max(numbers, default=0) + 1
+                elif not model_name:
+                    logging.debug("SubToolBar: No filenames found for project; defaulting to data1")
+
+                next_filename = f"data{filename_counter}"
             self.filename_edit.setText(next_filename)
             logging.debug(f"SubToolBar: Refreshed filename to {next_filename}")
         except Exception as e:
