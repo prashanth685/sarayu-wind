@@ -89,6 +89,12 @@ class FrequencyPlot(QWidget):
         self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
 
+        # Text labels for bands
+        self.start_band_label = pg.TextItem("Start band", color='r', anchor=(0.5, 1.2))
+        self.end_band_label = pg.TextItem("End band", color='g', anchor=(0.5, 1.2))
+        self.plot_widget.addItem(self.start_band_label, ignoreBounds=True)
+        self.plot_widget.addItem(self.end_band_label, ignoreBounds=True)
+
         # Mouse tracking
         self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
         self.plot_widget.scene().sigMouseClicked.connect(self.mouseClicked)
@@ -242,6 +248,8 @@ class FrequencyPlot(QWidget):
         self.plot_widget.addItem(self.center_dot, ignoreBounds=True)
         self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
+        self.plot_widget.addItem(self.start_band_label, ignoreBounds=True)
+        self.plot_widget.addItem(self.end_band_label, ignoreBounds=True)
 
         if self.time_data:
             t_arr = np.array(self.time_data)
@@ -281,6 +289,14 @@ class FrequencyPlot(QWidget):
             self.end_slider.setValue(int(self.upper_time_percentage))
             self.start_label.setText(f"Start: {datetime.datetime.fromtimestamp(start_t):%H:%M:%S}")
             self.end_label.setText(f"End: {datetime.datetime.fromtimestamp(end_t):%H:%M:%S}")
+
+            # Position band labels above the plot at the band x-positions
+            if self.frequency_data:
+                max_f = max(self.frequency_data)
+                if self.start_band_label:
+                    self.start_band_label.setPos(start_t, max_f)
+                if self.end_band_label:
+                    self.end_band_label.setPos(end_t, max_f)
         finally:
             self.start_vertical_line.sigPositionChanged.connect(self.on_start_line_moved)
             self.end_vertical_line.sigPositionChanged.connect(self.on_end_line_moved)
@@ -397,6 +413,8 @@ class FrequencyPlot(QWidget):
         end_t = min(self.time_data) + (max(self.time_data) - min(self.time_data)) * (self.upper_time_percentage / 100)
 
         selected_data = {
+            "lower_pct": self.lower_time_percentage,
+            "upper_pct": self.upper_time_percentage,
             "filename": self.filename,
             "model": self.model_name,
             "frameIndex": record.get("frameIndex"),
@@ -500,6 +518,43 @@ class FrequencyPlot(QWidget):
         except:
             pass
         super().closeEvent(event)
+
+    def load_selected_frame(self, payload: dict):
+        """Apply a saved selection (cursor + range) when opening an existing file."""
+        try:
+            if not payload:
+                return
+            # Apply cursor lock
+            frame_idx = payload.get("frameIndex")
+            ts_val = None
+            if frame_idx is not None:
+                # Find record with that frameIndex
+                rec = next((r for r in self.current_records if r.get("frameIndex") == frame_idx), None)
+                if rec:
+                    rec_ts = self.parse_time(rec.get("createdAt"))
+                    ts_val = rec_ts.timestamp() if rec_ts else rec.get("frameIndex", None)
+            if ts_val is None and payload.get("timestamp"):
+                ts_parsed = self.parse_time(payload.get("timestamp"))
+                if ts_parsed:
+                    ts_val = ts_parsed.timestamp()
+            if ts_val is not None:
+                # Snap to nearest data point for cursor lock
+                if self.time_data and self.frequency_data:
+                    closest_x, closest_y = self.snap_to_nearest_data_point(ts_val, 0)
+                    self.locked_crosshair_position = closest_x
+                    self.is_crosshair_locked = True
+                    self.vLine.setPos(closest_x)
+                    self.hLine.setPos(closest_y)
+                    self.center_dot.setData([closest_x], [closest_y])
+            # Apply range if provided
+            lower_pct = payload.get("lower_pct")
+            upper_pct = payload.get("upper_pct")
+            if lower_pct is not None and upper_pct is not None:
+                self.lower_time_percentage = float(lower_pct)
+                self.upper_time_percentage = float(upper_pct)
+                self.update_selection_lines()
+        except Exception as e:
+            logging.error(f"FrequencyPlot: Error loading selected frame: {e}")
 
     def snap_to_nearest_data_point(self, mouse_x, mouse_y):
         """Snap cursor position to the nearest frequency data point"""
