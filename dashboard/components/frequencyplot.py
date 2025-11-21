@@ -35,7 +35,8 @@ class FrequencyPlot(QWidget):
         self.selected_record = None
         self.is_crosshair_locked = False
         self.locked_crosshair_position = None
-
+        self.selected_point = None
+        self.selection_line = None
         self.is_destroying = False
 
         self.initUI()
@@ -76,6 +77,14 @@ class FrequencyPlot(QWidget):
         # Center dot at crosshair intersection
         self.center_dot = pg.ScatterPlotItem(size=10, brush=pg.mkBrush('red'), pen=pg.mkPen('darkred', width=2))
         self.plot_widget.addItem(self.center_dot, ignoreBounds=True)
+        
+        # Selected point indicator
+        self.selected_dot = pg.ScatterPlotItem(size=12, brush=pg.mkBrush('green'), pen=pg.mkPen('darkgreen', width=2))
+        self.plot_widget.addItem(self.selected_dot, ignoreBounds=True)
+        
+        # Line from selected point to cursor
+        self.selection_line = pg.PlotCurveItem(pen=pg.mkPen('green', width=1, style=Qt.DashLine))
+        self.plot_widget.addItem(self.selection_line)
 
         # Red & Green Movable Selection Lines
         self.start_vertical_line = pg.InfiniteLine(angle=90, movable=True,
@@ -89,11 +98,19 @@ class FrequencyPlot(QWidget):
         self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
 
-        # Text labels for bands
-        self.start_band_label = pg.TextItem("Start band", color='r', anchor=(0.5, 1.2))
-        self.end_band_label = pg.TextItem("End band", color='g', anchor=(0.5, 1.2))
+        # Text labels for bands with border and padding
+        self.start_band_label = pg.TextItem(html='<div style="text-align: center; color: white; background-color: rgba(255, 0, 0, 0.7); padding: 2px 8px; border: 1px solid #990000; border-radius: 4px;">Start Band</div>', 
+                                          anchor=(0.5, 0), border=None, fill=pg.mkBrush(0, 0, 0, 0))
+        self.end_band_label = pg.TextItem(html='<div style="text-align: center; color: white; background-color: rgba(0, 200, 0, 0.7); padding: 2px 8px; border: 1px solid #006600; border-radius: 4px;">End Band</div>', 
+                                        anchor=(0.5, 0), border=None, fill=pg.mkBrush(0, 0, 0, 0))
+        
+        # Add labels to the plot
         self.plot_widget.addItem(self.start_band_label, ignoreBounds=True)
         self.plot_widget.addItem(self.end_band_label, ignoreBounds=True)
+        
+        # Position the labels at the top of the plot
+        self.start_band_label.setZValue(100)  # Ensure labels are on top
+        self.end_band_label.setZValue(100)
 
         # Mouse tracking
         self.proxy = pg.SignalProxy(self.plot_widget.scene().sigMouseMoved, rateLimit=60, slot=self.mouseMoved)
@@ -246,6 +263,8 @@ class FrequencyPlot(QWidget):
         self.plot_widget.addItem(self.vLine, ignoreBounds=True)
         self.plot_widget.addItem(self.hLine, ignoreBounds=True)
         self.plot_widget.addItem(self.center_dot, ignoreBounds=True)
+        self.plot_widget.addItem(self.selected_dot, ignoreBounds=True)
+        self.plot_widget.addItem(self.selection_line, ignoreBounds=True)
         self.plot_widget.addItem(self.start_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.end_vertical_line, ignoreBounds=True)
         self.plot_widget.addItem(self.start_band_label, ignoreBounds=True)
@@ -290,13 +309,17 @@ class FrequencyPlot(QWidget):
             self.start_label.setText(f"Start: {datetime.datetime.fromtimestamp(start_t):%H:%M:%S}")
             self.end_label.setText(f"End: {datetime.datetime.fromtimestamp(end_t):%H:%M:%S}")
 
-            # Position band labels above the plot at the band x-positions
+            # Position band labels at the top of the plot with proper vertical alignment
             if self.frequency_data:
-                max_f = max(self.frequency_data)
+                # Get the visible y-range
+                y_range = self.plot_widget.viewRange()[1]
+                # Position labels slightly above the top of the plot
+                label_y = y_range[1] - (y_range[1] - y_range[0]) * 0.05  # 5% from top
+                
                 if self.start_band_label:
-                    self.start_band_label.setPos(start_t, max_f)
+                    self.start_band_label.setPos(start_t, label_y)
                 if self.end_band_label:
-                    self.end_band_label.setPos(end_t, max_f)
+                    self.end_band_label.setPos(end_t, label_y)
         finally:
             self.start_vertical_line.sigPositionChanged.connect(self.on_start_line_moved)
             self.end_vertical_line.sigPositionChanged.connect(self.on_end_line_moved)
@@ -342,7 +365,7 @@ class FrequencyPlot(QWidget):
         self.update_selection_lines()
 
     def mouseMoved(self, evt):
-        if self.is_crosshair_locked or not evt: return
+        if not evt: return
         pos = evt[0]
         if self.plot_widget.plotItem.vb.sceneBoundingRect().contains(pos):
             mp = self.plot_widget.plotItem.vb.mapSceneToView(pos)
@@ -354,6 +377,11 @@ class FrequencyPlot(QWidget):
                 self.hLine.setPos(closest_y)
                 # Update center dot position
                 self.center_dot.setData([closest_x], [closest_y])
+                
+                # Update selection line if we have a selected point
+                if self.selected_point is not None:
+                    self.selection_line.setData([self.selected_point[0], closest_x], 
+                                              [self.selected_point[1], closest_y])
             else:
                 self.vLine.setPos(mp.x())
                 self.hLine.setPos(mp.y())
@@ -368,26 +396,39 @@ class FrequencyPlot(QWidget):
             # Snap to nearest data point when clicking
             if self.time_data and self.frequency_data:
                 closest_x, closest_y = self.snap_to_nearest_data_point(mp.x(), mp.y())
+                
+                # Toggle selection on/off if clicking the same point
+                if self.selected_point and abs(self.selected_point[0] - closest_x) < 0.1 and abs(self.selected_point[1] - closest_y) < 0.1:
+                    self.selected_point = None
+                    self.selected_dot.setData([], [])
+                    self.selection_line.setData([], [])
+                else:
+                    # Select the new point
+                    self.selected_point = (closest_x, closest_y)
+                    self.selected_dot.setData([closest_x], [closest_y])
+                    
+                    # Update the selection line to current cursor position
+                    self.selection_line.setData([closest_x, closest_x], [closest_y, closest_y])
+                
+                # Always update crosshair position
                 self.locked_crosshair_position = closest_x
-                self.is_crosshair_locked = True
                 self.vLine.setPos(closest_x)
                 self.hLine.setPos(closest_y)
                 self.center_dot.setData([closest_x], [closest_y])
             else:
                 self.locked_crosshair_position = mp.x()
-                self.is_crosshair_locked = True
                 self.vLine.setPos(mp.x())
                 self.hLine.setPos(mp.y())
                 self.center_dot.setData([mp.x()], [mp.y()])
 
     def select_button_click(self):
-        if not self.is_crosshair_locked:
+        if self.selected_point is None:
             self._show_messagebox("Selection Required",
-                                  "Please click on the plot to lock the crosshair at the desired position first,\nthen click Select.",
+                                  "Please click on a data point to select it first,\nthen click Select.",
                                   QMessageBox.Information)
             return
 
-        selected_ts = self.locked_crosshair_position
+        selected_ts = self.selected_point[0] if self.selected_point else self.locked_crosshair_position
         idx = np.argmin(np.abs(np.array(self.time_data) - selected_ts))
         
         # Find the record with timestamp closest to the selected position
@@ -541,6 +582,10 @@ class FrequencyPlot(QWidget):
                 # Snap to nearest data point for cursor lock
                 if self.time_data and self.frequency_data:
                     closest_x, closest_y = self.snap_to_nearest_data_point(ts_val, 0)
+                    # Update selected point visualization
+                    self.selected_point = (closest_x, closest_y)
+                    self.selected_dot.setData([closest_x], [closest_y])
+                    # Update cursor position
                     self.locked_crosshair_position = closest_x
                     self.is_crosshair_locked = True
                     self.vLine.setPos(closest_x)
