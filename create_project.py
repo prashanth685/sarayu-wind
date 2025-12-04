@@ -1,4 +1,7 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, QPushButton, QLabel, QMessageBox, QScrollArea, QComboBox, QApplication, QTableWidget, QTableWidgetItem, QHeaderView
+from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QLineEdit, 
+                            QPushButton, QLabel, QMessageBox, QScrollArea, QComboBox, 
+                            QApplication, QTableWidget, QTableWidgetItem, QHeaderView,
+                            QTabWidget, QSpinBox, QDoubleSpinBox)
 from PyQt5.QtCore import Qt, pyqtSignal
 import sys
 import datetime
@@ -91,9 +94,243 @@ class CreateProjectWidget(QWidget):
         main_layout = QVBoxLayout()
         main_layout.setAlignment(Qt.AlignCenter)
         main_layout.setSpacing(20)
-        main_layout.setContentsMargins(40, 20, 40, 20)
+        main_layout.setContentsMargins(20, 20, 20, 20)
         self.setLayout(main_layout)
+        
+        # Create tab widget
+        self.tabs = QTabWidget()
+        main_layout.addWidget(self.tabs)
+        
+        # Create tabs
+        self.general_tab = QWidget()
+        self.advanced_tab = QWidget()
+        self.io_tab = QWidget()
+        
+        self.tabs.addTab(self.general_tab, "General")
+        self.tabs.addTab(self.advanced_tab, "Advanced")
+        self.tabs.addTab(self.io_tab, "I/O")
+        
+        # Initialize tabs
+        self.init_general_tab()
+        self.init_advanced_tab()
+        self.init_io_tab()
+        
+        # Add buttons at the bottom
+        self.init_bottom_buttons()
+        
+    def init_advanced_tab(self):
+        """Initialize the Advanced tab with sampling frequency and other settings"""
+        layout = QVBoxLayout(self.advanced_tab)
+        layout.setAlignment(Qt.AlignTop)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Create form for advanced settings
+        form_layout = QFormLayout()
+        form_layout.setSpacing(20)
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        
+        # Sampling Frequency
+        self.sampling_freq = QDoubleSpinBox()
+        self.sampling_freq.setRange(0.1, 10000.0)
+        self.sampling_freq.setValue(1000.0)
+        self.sampling_freq.setSuffix(" Hz")
+        self.sampling_freq.setStyleSheet("""
+            QDoubleSpinBox {
+                min-width: 200px;
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+            }
+        """)
+        form_layout.addRow("Sampling Frequency:", self.sampling_freq)
+        
+        # Input Delta Time
+        self.delta_time = QDoubleSpinBox()
+        self.delta_time.setRange(0.001, 10.0)
+        self.delta_time.setValue(0.1)
+        self.delta_time.setSuffix(" s")
+        self.delta_time.setStyleSheet("""
+            QDoubleSpinBox {
+                min-width: 200px;
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+            }
+        """)
+        form_layout.addRow("Input Delta Time:", self.delta_time)
+        
+        # Number of Data Points
+        self.num_data_points = QSpinBox()
+        self.num_data_points.setRange(100, 1000000)
+        self.num_data_points.setValue(1000)
+        self.num_data_points.setStyleSheet("""
+            QSpinBox {
+                min-width: 200px;
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+            }
+        """)
+        form_layout.addRow("Number of Data Points:", self.num_data_points)
+        
+        # Delta RPM Button
+        self.delta_rpm_btn = QPushButton("Delta RPM")
+        self.delta_rpm_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 500;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+        """)
+        self.delta_rpm_btn.clicked.connect(self.on_delta_rpm_clicked)
+        form_layout.addRow("", self.delta_rpm_btn)
+        
+        layout.addLayout(form_layout)
+        layout.addStretch()
+    
+    def init_io_tab(self):
+        """Initialize the I/O tab with IP address and tag name settings"""
+        layout = QVBoxLayout(self.io_tab)
+        layout.setAlignment(Qt.AlignTop)
+        layout.setContentsMargins(20, 20, 20, 20)
+        
+        # Create form for I/O settings
+        form_layout = QFormLayout()
+        form_layout.setSpacing(20)
+        form_layout.setLabelAlignment(Qt.AlignLeft)
+        form_layout.setFormAlignment(Qt.AlignLeft | Qt.AlignTop)
+        
+        # IP Address Input
+        self.ip_address = QLineEdit()
+        self.ip_address.setPlaceholderText("Enter IP Address")
+        self.ip_address.setStyleSheet("""
+            QLineEdit {
+                min-width: 200px;
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+            }
+            QLineEdit:focus {
+                border-color: #3b82f6;
+            }
+        """)
+        form_layout.addRow("IP Address:", self.ip_address)
+        
+        # Tag Name Input
+        self.tag_name = QLineEdit()
+        self.tag_name.setPlaceholderText("Enter Tag Name")
+        self.tag_name.setStyleSheet("""
+            QLineEdit {
+                min-width: 200px;
+                padding: 8px;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+            }
+            QLineEdit:focus {
+                border-color: #3b82f6;
+            }
+        """)
+        form_layout.addRow("Tag Name:", self.tag_name)
+        
+        # Resolve Button
+        self.resolve_btn = QPushButton("Resolve")
+        self.resolve_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-weight: 500;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+        """)
+        self.resolve_btn.clicked.connect(self.on_resolve_clicked)
+        form_layout.addRow("", self.resolve_btn)
+        
+        layout.addLayout(form_layout)
+        layout.addStretch()
+    
+    def init_bottom_buttons(self):
+        """Initialize the bottom buttons that appear below the tabs"""
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+        button_layout.setAlignment(Qt.AlignRight)
+        
+        # Back Button
+        back_button = QPushButton("Back")
+        back_button.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #6b7280;
+                border: 1px solid #d1d5db;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-size: 14px;
+                font-weight: 500;
+                min-width: 100px;
+            }
+            QPushButton:hover {
+                background-color: #f1f5f9;
+            }
+        """)
+        back_button.clicked.connect(self.back_to_select)
+        
+        # Create/Update Button
+        self.create_button = QPushButton("Update Project" if self.edit_mode else "Create Project")
+        self.create_button.setStyleSheet("""
+            QPushButton {
+                background-color: #3b82f6;
+                color: white;
+                border-radius: 4px;
+                padding: 8px 16px;
+                font-size: 14px;
+                font-weight: 500;
+                min-width: 120px;
+            }
+            QPushButton:hover {
+                background-color: #2563eb;
+            }
+        """)
+        self.create_button.clicked.connect(self.submit_project)
+        
+        button_layout.addWidget(back_button)
+        button_layout.addWidget(self.create_button)
+        
+        # Add the button layout to the main layout (below tabs)
+        self.layout().addLayout(button_layout)
+    
+    def on_delta_rpm_clicked(self):
+        """Handle Delta RPM button click"""
+        QMessageBox.information(self, "Delta RPM", "Delta RPM button clicked")
+        # Add your Delta RPM logic here
+    
+    def on_resolve_clicked(self):
+        """Handle Resolve button click in I/O tab"""
+        ip = self.ip_address.text().strip()
+        tag = self.tag_name.text().strip()
+        
+        if not ip or not tag:
+            QMessageBox.warning(self, "Input Error", "Please enter both IP Address and Tag Name")
+            return
+            
+        # Here you would typically resolve the tag
+        QMessageBox.information(self, "Resolve", f"Resolving tag '{tag}' at {ip}...")
+        # Add your tag resolution logic here
 
+    def init_general_tab(self):
+        """Initialize the General tab with channel table and project details"""
         scroll_area = QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setStyleSheet("""
@@ -102,15 +339,18 @@ class CreateProjectWidget(QWidget):
                 background-color: transparent;
             }
         """)
-        main_layout.addWidget(scroll_area)
-
+        
         scroll_widget = QWidget()
         scroll_layout = QVBoxLayout()
         scroll_layout.setAlignment(Qt.AlignCenter)
         scroll_layout.setSpacing(24)
         scroll_widget.setLayout(scroll_layout)
         scroll_area.setWidget(scroll_widget)
-
+        
+        # Main layout for general tab
+        general_layout = QVBoxLayout(self.general_tab)
+        general_layout.addWidget(scroll_area)
+        
         card_widget = QWidget()
         card_widget.setStyleSheet("""
             QWidget {
@@ -120,9 +360,9 @@ class CreateProjectWidget(QWidget):
                 padding: 24px;
             }
         """)
-        card_layout = QVBoxLayout()
-        card_layout.setSpacing(16)
-        card_widget.setLayout(card_layout)
+        self.card_layout = QVBoxLayout()
+        self.card_layout.setSpacing(16)
+        card_widget.setLayout(self.card_layout)
         scroll_layout.addWidget(card_widget)
 
         title_label = QLabel("Edit Project" if self.edit_mode else "Create New Project")
@@ -132,15 +372,15 @@ class CreateProjectWidget(QWidget):
             color: #1a202c;
             margin-bottom: 8px;
         """)
-        card_layout.addWidget(title_label, alignment=Qt.AlignCenter)
+        self.card_layout.addWidget(title_label, alignment=Qt.AlignCenter)
 
-        subtitle_label = QLabel("Modify project details and models" if self.edit_mode else "Start by defining project details and models")
+        subtitle_label = QLabel("General Settings")
         subtitle_label.setStyleSheet("""
             font-size: 14px;
             color: #6b7280;
             margin-bottom: 16px;
         """)
-        card_layout.addWidget(subtitle_label, alignment=Qt.AlignCenter)
+        self.card_layout.addWidget(subtitle_label, alignment=Qt.AlignCenter)
 
         project_details_label = QLabel("Project Details")
         project_details_label.setStyleSheet("""
@@ -150,7 +390,7 @@ class CreateProjectWidget(QWidget):
             margin-top: 16px;
             margin-bottom: 8px;
         """)
-        card_layout.addWidget(project_details_label)
+        self.card_layout.addWidget(project_details_label)
 
         project_form = QFormLayout()
         project_form.setSpacing(12)
@@ -178,7 +418,22 @@ class CreateProjectWidget(QWidget):
             }
         """)
         project_form.addRow("Project Name:", self.project_name_input)
-
+        
+        # Add more fields to the general tab as needed
+        
+        self.card_layout.addLayout(project_form)
+        
+        # Add channel table section
+        channel_section = QLabel("Channel Configuration")
+        channel_section.setStyleSheet("""
+            font-size: 16px;
+            font-weight: 500;
+            color: #1a202c;
+            margin-top: 16px;
+            margin-bottom: 8px;
+        """)
+        self.card_layout.addWidget(channel_section)
+        
         self.channel_count_combo = QComboBox()
         self.channel_count_combo.addItems(self.available_channel_counts)
         if self.edit_mode and self.existing_channel_count:
@@ -202,7 +457,7 @@ class CreateProjectWidget(QWidget):
         """)
         self.channel_count_combo.currentTextChanged.connect(self.update_table)
         project_form.addRow("Channel Count:", self.channel_count_combo)
-        card_layout.addLayout(project_form)
+        self.card_layout.addLayout(project_form)
 
         add_model_button = QPushButton("+ Add Model")
         add_model_button.setStyleSheet("""
@@ -223,12 +478,12 @@ class CreateProjectWidget(QWidget):
             }
         """)
         add_model_button.clicked.connect(self.add_model_input)
-        card_layout.addWidget(add_model_button, alignment=Qt.AlignRight)
+        self.card_layout.addWidget(add_model_button, alignment=Qt.AlignRight)
 
         self.model_layout = QVBoxLayout()
         self.model_layout.setSpacing(16)
         self.model_inputs = []
-        card_layout.addLayout(self.model_layout)
+        self.card_layout.addLayout(self.model_layout)
 
         # Pre-populate models if in edit mode
         if self.edit_mode and self.existing_models:
@@ -282,7 +537,8 @@ class CreateProjectWidget(QWidget):
         create_button.clicked.connect(self.submit_project)
         button_layout.addWidget(create_button)
 
-        card_layout.addLayout(button_layout)
+        # Move buttons to bottom of the window
+        self.card_layout.addStretch()
 
     def update_table(self, channel_count):
         for widget, model_name_input, tag_name_input, channel_inputs, _ in self.model_inputs:
